@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'dart:io'; // Required for File
 import 'package:image_picker/image_picker.dart'; // Required for Camera/Gallery
+import 'package:flutter_blue_plus/flutter_blue_plus.dart'; // Required for Bluetooth
 import 'main.dart'; // Required to access the Dark Mode controller
 
 class StudentScreen extends StatefulWidget {
   final String studentEmail;
   
-  // If no email is provided, use a default (for testing)
   const StudentScreen({super.key, this.studentEmail = "student.ai23@rvce.edu.in"});
 
   @override
@@ -34,14 +34,11 @@ class _StudentScreenState extends State<StudentScreen> {
 
   void _parseStudentData() {
     try {
-      // Logic: Extract "Rahul" from "rahul.ai23@rvce.edu.in"
       String localPart = widget.studentEmail.split('@')[0]; 
       String namePart = localPart.split('.')[0];
       
-      // Capitalize first letter
       _displayName = namePart[0].toUpperCase() + namePart.substring(1);
       
-      // Create fake USN
       String batchPart = localPart.split('.')[1].toUpperCase(); 
       _displayUSN = "1RV${batchPart}0${namePart.length + 40}"; 
     } catch (e) {
@@ -59,6 +56,9 @@ class _StudentScreenState extends State<StudentScreen> {
         onDestinationSelected: (int index) {
           setState(() {
             _currentIndex = index;
+            // Re-initialize pages to update names if needed
+            _pages[0] = DashboardPage(name: _displayName);
+            _pages[2] = SettingsPage(name: _displayName, email: widget.studentEmail);
           });
         },
         destinations: const [
@@ -72,14 +72,95 @@ class _StudentScreenState extends State<StudentScreen> {
 }
 
 // ==========================================
-// 1. DASHBOARD PAGE
+// 1. DASHBOARD PAGE (Fixed & Secure)
 // ==========================================
 class DashboardPage extends StatelessWidget {
   final String name;
   const DashboardPage({super.key, required this.name});
 
+  Future<void> _markAttendance(BuildContext context) async {
+    // 1. Check if Bluetooth is On
+    if (await FlutterBluePlus.adapterState.first != BluetoothAdapterState.on) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Please turn on Bluetooth first!")),
+        );
+      }
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      // 2. Start Scanning
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
+
+      String foundClassName = ""; 
+      
+      // 3. Listen to Scan Results (WITH SECURITY FILTER)
+      var subscription = FlutterBluePlus.scanResults.listen((results) {
+        for (ScanResult r in results) {
+          String deviceName = r.device.platformName;
+          
+          // SECURITY CHECK: Only accept devices starting with "RVCE_CLASS"
+          if (deviceName.startsWith("RVCE_CLASS")) {
+             print("Valid Class Found: $deviceName");
+             foundClassName = deviceName; 
+          }
+        }
+      });
+
+      // Wait for scan to finish
+      await Future.delayed(const Duration(seconds: 4));
+      
+      // Stop scanning
+      await FlutterBluePlus.stopScan();
+      await subscription.cancel();
+      
+      if (context.mounted) Navigator.pop(context); // Close spinner
+
+      // 4. Show Result based on what we found
+      if (foundClassName.isNotEmpty) {
+        String cleanName = foundClassName.replaceAll("RVCE_CLASS_", "");
+        if (context.mounted) _showSuccessDialog(context, cleanName);
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+             const SnackBar(
+               content: Text("No Class Beacon Found. Ask teacher to start."),
+               backgroundColor: Colors.red,
+             ),
+          );
+        }
+      }
+
+    } catch (e) {
+      if (context.mounted) Navigator.pop(context);
+      print("Error: $e");
+    }
+  }
+
+  void _showSuccessDialog(BuildContext context, String className) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.check_circle, color: Colors.green, size: 60),
+        title: const Text("Attendance Marked!"),
+        content: Text("You have successfully checked into:\n\n$className"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Done")),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Mock Data
     final List<Map<String, dynamic>> subjects = [
       {"name": "Artificial Intelligence", "code": "AI-301", "attended": 24, "total": 28},
       {"name": "Embedded Systems", "code": "EC-204", "attended": 12, "total": 20},
@@ -88,7 +169,7 @@ class DashboardPage extends StatelessWidget {
     ];
 
     return Scaffold(
-      backgroundColor: Theme.of(context).colorScheme.surface, 
+      backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: Column(
@@ -126,7 +207,7 @@ class DashboardPage extends StatelessWidget {
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {},
+        onPressed: () => _markAttendance(context),
         backgroundColor: Theme.of(context).primaryColor,
         icon: const Icon(Icons.bluetooth_searching, color: Colors.white),
         label: const Text("Mark Attendance", style: TextStyle(color: Colors.white)),
@@ -214,7 +295,7 @@ class DashboardPage extends StatelessWidget {
 }
 
 // ==========================================
-// 2. TIMETABLE PAGE (With Camera Logic)
+// 2. TIMETABLE PAGE
 // ==========================================
 class TimetablePage extends StatefulWidget {
   const TimetablePage({super.key});
@@ -414,7 +495,7 @@ class _TimetablePageState extends State<TimetablePage> {
 }
 
 // ==========================================
-// 3. SETTINGS PAGE (With Dark Mode)
+// 3. SETTINGS PAGE
 // ==========================================
 class SettingsPage extends StatefulWidget {
   final String name;
