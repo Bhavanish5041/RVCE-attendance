@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:path/path.dart' as p;
 
@@ -68,7 +69,7 @@ class DatabaseService {
       
       return List<Map<String, dynamic>>.from(response);
     } catch (e) {
-      print("Error fetching attendance summary: $e");
+      debugPrint("Error fetching attendance summary: $e");
       return [];
     }
   }
@@ -204,10 +205,11 @@ class DatabaseService {
           .toSet() 
           .toList();
       
+      if (depts.isEmpty) return ["CSE", "ECE", "ISE", "AIML", "MECH", "CIVIL"];
       return depts;
     } catch (e) {
-      // Return empty list on error
-      return [];
+      // Return default list on error
+      return ["CSE", "ECE", "ISE", "AIML", "MECH", "CIVIL"];
     }
   }
 
@@ -227,9 +229,10 @@ class DatabaseService {
           .toSet()
           .toList();
       
+      if (sems.isEmpty) return [1, 2, 3, 4, 5, 6, 7, 8];
       return sems;
     } catch (e) {
-      return [];
+      return [1, 2, 3, 4, 5, 6, 7, 8];
     }
   }
 
@@ -251,9 +254,10 @@ class DatabaseService {
           .toSet()
           .toList();
 
+      if (sections.isEmpty) return ["A", "B", "C"];
       return sections;
     } catch (e) {
-      return [];
+      return ["A", "B", "C"];
     }
   }
 
@@ -422,7 +426,7 @@ class DatabaseService {
       // Syntax for "not in" depends on your Supabase version, 
       // but client-side filtering is often safer for small lists of teachers.
       final allTeachers = await query;
-      return (allTeachers as List<Map<String, dynamic>>)
+      return allTeachers
           .where((t) => !busyIds.contains(t['id']))
           .toList();
     } else {
@@ -655,6 +659,36 @@ class DatabaseService {
         .order('created_at', ascending: false);
   }
 
+  /// Student: Get ALL materials for student's enrolled subjects
+  Future<List<Map<String, dynamic>>> getAllStudentMaterials(String studentEmail) async {
+    try {
+      // First get student's section to find their subjects
+      final section = await getStudentSection(studentEmail);
+      debugPrint("Fetching materials for section: $section");
+      
+      // Get all resources - in a real app, filter by subjects student is enrolled in
+      // For now, get all recent resources (could be filtered by section's subjects)
+      final resources = await _client
+          .from('class_resources')
+          .select('*, teachers(name)')
+          .order('created_at', ascending: false)
+          .limit(50);
+      
+      return List<Map<String, dynamic>>.from(resources);
+    } catch (e) {
+      debugPrint("Error fetching student materials: $e");
+      return [];
+    }
+  }
+
+  /// Stream version for real-time materials updates
+  Stream<List<Map<String, dynamic>>> streamStudentMaterials() {
+    return _client
+        .from('class_resources')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false);
+  }
+
   /// Teacher/Admin: Change a room for a specific class slot
   Future<void> updateClassRoom(int timetableId, String newRoom) async {
     await _client.from('timetable').update({
@@ -750,7 +784,7 @@ class DatabaseService {
         'email': email
       };
     } catch (e) {
-      print("Error fetching analytics: $e");
+      debugPrint("Error fetching analytics: $e");
       return {
         'subjects': [],
         'recent_logs': [],
@@ -769,7 +803,7 @@ class DatabaseService {
           .select('section')
           .eq('email', email)
           .single();
-      return data['section'] as String? ?? 'Unknown';
+          return data['section']?.toString() ?? 'Unknown';
     } catch (e) {
       return 'Unknown';
     }
@@ -809,9 +843,14 @@ class DatabaseService {
       late String roomNumber;
       late int dayOfWeek;
       late int startHour;
+      String? section; // Resolving section is critical
       
       if (arg2 is int && arg3 is int && arg4 != null && arg5 != null && arg6 != null) {
         // Positional: (email, dayOfWeek: int, startHour: int, subject, professor, room)
+        // arg1 is email
+        if (arg1 != null) {
+           section = await getStudentSection(arg1);
+        }
         dayOfWeek = arg2;
         startHour = arg3;
         subject = arg4;
@@ -824,18 +863,64 @@ class DatabaseService {
         roomNumber = arg3 as String? ?? 'Unknown';
         dayOfWeek = arg4 != null ? int.tryParse(arg4) ?? 1 : 1;
         startHour = arg5 != null ? int.tryParse(arg5) ?? 9 : 9;
+        // Try to infer section from context or arg6 if provided
+        section = arg6; 
       }
       
+      // If section is still null, fallback properly or throw? 
+      // For now, let's try to get it from current user if we can
+      if (section == null) {
+         final user = _client.auth.currentUser;
+         if (user != null) {
+            // Try fetching student data
+            final studentData = await _client.from('students').select('section').eq('id', user.id).maybeSingle();
+            if (studentData != null) section = studentData['section']?.toString();
+         }
+      }
+
+      final user = _client.auth.currentUser;
+      if (user == null) throw "You must be logged in!";
+
       await _client.from('timetable').insert({
-        'subject': subject,
-        'professor': professor,
+        'subject_code': subject,
+        'teacher_id': user.id, // Authenticated User ID
+        'professor': professor, // Add professor name
         'room_number': roomNumber,
         'day_of_week': dayOfWeek,
-        'start_hour': startHour,
-      });
+
+        'start_time': "${startHour.toString().padLeft(2, '0')}:00:00",
+        'end_time': "${(startHour + 1).toString().padLeft(2, '0')}:00:00", // Default 1 hour duration
+        'section': section ?? 'Unknown', // Critical fix
+      }).select();
     } catch (e) {
-      // Silently fail
+      debugPrint("Error adding timetable entry: $e");
+      rethrow; // Rethrow so UI can handle (or at least fail visibly)
     }
+  }
+
+  Future<void> addStudentClass({
+    required String subject,
+    required String professor,
+    required String room,
+    required String day,
+    required String time,
+    required String section,
+  }) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw "Logged out";
+    
+    final h = int.tryParse(time) ?? 9;
+    
+    await _client.from('timetable').insert({
+      'teacher_id': user.id,
+      'subject_code': subject,
+      'professor': professor, // Add professor name
+      'room_number': room,
+      'day_of_week': int.tryParse(day) ?? 1,
+      'start_time': "${h.toString().padLeft(2, '0')}:00:00",
+      'end_time': "${(h + 1).toString().padLeft(2, '0')}:00:00", 
+      'section': section,
+    });
   }
 
   /// Delete a timetable entry
@@ -885,8 +970,13 @@ class DatabaseService {
       if (timetable.isEmpty) return null;
 
       final nowHour = DateTime.now().hour;
+      final nowSameFormat = "${nowHour.toString().padLeft(2, '0')}:00:00";
+      
       final next = timetable.firstWhere(
-        (t) => (t['start_hour'] ?? nowHour) >= nowHour,
+        (t) {
+           final tTime = t['start_time'] as String? ?? "00:00:00";
+           return tTime.compareTo(nowSameFormat) >= 0;
+        },
         orElse: () => timetable.first,
       );
 

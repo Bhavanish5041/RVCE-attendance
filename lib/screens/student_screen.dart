@@ -1,17 +1,11 @@
 import 'package:flutter/material.dart';
-import 'dart:io';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:fl_chart/fl_chart.dart';
-import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
-import 'package:file_picker/file_picker.dart';
 import '../main.dart'; 
+import 'attendance/scan_screen.dart';
 import '../services/database_service.dart';
 import 'login_screen.dart';
+import 'request_correction_page.dart';
 
 // ==========================================
 // 1. MAIN STUDENT SCREEN (NAVIGATION)
@@ -29,6 +23,7 @@ class _StudentScreenState extends State<StudentScreen> {
   String _displayName = "Student";
   
   List<Widget> _pages = [
+    const Center(child: CircularProgressIndicator()),
     const Center(child: CircularProgressIndicator()),
     const Center(child: CircularProgressIndicator()),
     const Center(child: CircularProgressIndicator()),
@@ -50,6 +45,7 @@ class _StudentScreenState extends State<StudentScreen> {
       setState(() {
         _pages = [
           DashboardPage(name: _displayName, email: widget.studentEmail),
+          MaterialsPage(email: widget.studentEmail),
           TimetablePage(email: widget.studentEmail), 
           SettingsPage(name: _displayName, email: widget.studentEmail), 
         ];
@@ -80,9 +76,10 @@ class _StudentScreenState extends State<StudentScreen> {
         onDestinationSelected: (int index) {
           setState(() {
             _currentIndex = index;
-            if (_pages.length == 3 && _pages[0] is! Center) {
+            if (_pages.length == 4 && _pages[0] is! Center) {
                _pages = [
                 DashboardPage(name: _displayName, email: widget.studentEmail),
+                MaterialsPage(email: widget.studentEmail),
                 TimetablePage(email: widget.studentEmail),
                 SettingsPage(name: _displayName, email: widget.studentEmail),
               ];
@@ -91,6 +88,7 @@ class _StudentScreenState extends State<StudentScreen> {
         },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Home'),
+          NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: 'Materials'),
           NavigationDestination(icon: Icon(Icons.calendar_month_outlined), selectedIcon: Icon(Icons.calendar_month), label: 'Timetable'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
         ],
@@ -102,6 +100,9 @@ class _StudentScreenState extends State<StudentScreen> {
 // ==========================================
 // 2. DASHBOARD PAGE (ANALYTICS + BUTTON)
 // ==========================================
+// ==========================================
+// 2. DASHBOARD PAGE (Refactored to Figma Design)
+// ==========================================
 class DashboardPage extends StatefulWidget {
   final String name;
   final String email; 
@@ -112,304 +113,1214 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  Future<Map<String, dynamic>>? _analyticsFuture;
+  int _selectedTab = 0; // 0: Home, 1: News, 2: Events
+  String _selectedSubject = 'DSA';
+  String _section = ''; // Student's semester/section
+
+  late Future<Map<String, dynamic>> _analyticsFuture;
 
   @override
   void initState() {
     super.initState();
-    _refreshData();
+    _analyticsFuture = DatabaseService().fetchFullAnalytics(widget.email);
+    _loadSection();
   }
 
-  void _refreshData() {
-    setState(() {
-      _analyticsFuture = DatabaseService().fetchFullAnalytics(widget.email);
-    });
-  }
-
-  Future<void> _markAttendance(BuildContext context) async {
-    if (await FlutterBluePlus.adapterState.first != BluetoothAdapterState.on) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Turn on Bluetooth!")));
-      }
-      return;
+  void _loadSection() async {
+    final section = await DatabaseService().getStudentSection(widget.email);
+    if (mounted) {
+      setState(() => _section = section);
     }
-
-    // [Attendance Logic kept same as provided code for brevity]
-    int batch = 24; 
-    try {
-      String localPart = widget.email.split('@')[0];
-      String batchPart = localPart.split('.')[1];
-      String yearStr = batchPart.replaceAll(RegExp(r'[^0-9]'), ''); 
-      batch = int.parse(yearStr);
-    } catch (e) { /* silent */ }
-
-    int currentYear = DateTime.now().year; 
-    int myYear = (currentYear - 2000) - batch;
-    if (myYear < 1) myYear = 1;
-    if (myYear > 4) myYear = 4;
-
-    String mySection = await DatabaseService().getStudentSection(widget.email);
-    int sectionNum = 1; 
-    if (mySection.endsWith("B")) sectionNum = 2;
-    if (mySection.endsWith("C")) sectionNum = 3;
-
-    int expectedCode = (myYear * 10) + sectionNum;
-    
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
-
-    String foundClass = "";
-    String foundSection = "";
-
-    var subscription = FlutterBluePlus.scanResults.listen((results) {
-      for (ScanResult r in results) {
-        if (r.advertisementData.manufacturerData.containsKey(65535)) {
-          List<int> data = r.advertisementData.manufacturerData[65535] ?? [];
-          if (data.length >= 3 && data[0] == 0xBE && data[1] == 0xAC) {
-            int teacherBeaconCode = data[2];
-            if (teacherBeaconCode == expectedCode) {
-              foundClass = "AI_ML"; // Simulating subject detection
-              foundSection = mySection;
-            }
-          }
-        }
-      }
-    });
-
-    await Future.delayed(const Duration(seconds: 4));
-    await FlutterBluePlus.stopScan();
-    await subscription.cancel();
-
-    if (foundClass.isNotEmpty) {
-      await DatabaseService().markAttendance(widget.email, foundClass, foundSection);
-      if (context.mounted) _showSuccessDialog(context, foundClass);
-      _refreshData();
-    } else {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No matching class beacon found."), backgroundColor: Colors.red));
-      }
-    }
-  }
-
-  void _showSuccessDialog(BuildContext context, String className) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        icon: const Icon(Icons.check_circle, color: Colors.green, size: 60),
-        title: const Text("Attendance Marked!"),
-        content: Text("Checked into: $className"),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Done"))],
-      ),
-    );
-  }
-
-  Future<void> _generatePdf(String subjectName, List<Map<String, dynamic>> logs) async {
-    final pdf = pw.Document();
-    final font = await PdfGoogleFonts.openSansRegular(); 
-    final boldFont = await PdfGoogleFonts.openSansBold();
-
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        build: (pw.Context context) {
-          return pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Header(level: 0, child: pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
-                    pw.Text("Attendance Report", style: pw.TextStyle(font: boldFont, fontSize: 24)),
-                    pw.Text("RVCE Smart Attendance", style: pw.TextStyle(font: font, fontSize: 14, color: PdfColors.grey)),
-              ])),
-              pw.SizedBox(height: 20),
-              pw.Text("Student: ${widget.name}", style: pw.TextStyle(font: boldFont)),
-              pw.Text("Subject: $subjectName", style: pw.TextStyle(font: font)),
-              pw.SizedBox(height: 20),
-              pw.Table.fromTextArray(
-                headers: ["Date", "Day", "Time", "Status"],
-                data: logs.map((log) {
-                  final date = DateTime.parse(log['check_in_time']).toLocal();
-                  return [DateFormat('yyyy-MM-dd').format(date), DateFormat('EEEE').format(date), DateFormat('hh:mm a').format(date), "Present"];
-                }).toList(),
-                headerStyle: pw.TextStyle(font: boldFont, color: PdfColors.white),
-                headerDecoration: const pw.BoxDecoration(color: PdfColors.purple),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-    await Printing.sharePdf(bytes: await pdf.save(), filename: '${subjectName}_Report.pdf');
   }
 
   @override
   Widget build(BuildContext context) {
-    // 🟢 Dark Mode Check
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final textColor = Theme.of(context).textTheme.bodyLarge?.color;
-
+    final bgColor = Theme.of(context).scaffoldBackgroundColor;
+    final cardColor = Theme.of(context).cardColor;
+    final textColor = Theme.of(context).textTheme.bodyLarge?.color ?? Colors.black;
+    
     return Scaffold(
-      // 🟢 Use Theme background
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        elevation: 0, 
-        backgroundColor: isDark ? Colors.grey[900] : Colors.white, 
-        automaticallyImplyLeading: false,
-        title: Row(children: [
-            CircleAvatar(backgroundColor: Colors.purple.shade100, child: Text(widget.name[0], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple))),
-            const SizedBox(width: 10),
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text("Hi, ${widget.name}", style: TextStyle(color: textColor, fontSize: 18, fontWeight: FontWeight.bold)), 
-              Text("Here's your progress", style: const TextStyle(color: Colors.grey, fontSize: 12))
-            ]),
-        ]),
-        actions: [IconButton(icon: const Icon(Icons.refresh, color: Colors.grey), onPressed: _refreshData)],
+      backgroundColor: bgColor,
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildHeader(isDark, textColor),
+            Expanded(
+              child: FutureBuilder<Map<String, dynamic>>(
+                future: _analyticsFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  if (snapshot.hasError) {
+                    return Center(child: Text("Error: ${snapshot.error}"));
+                  }
+                  
+                  final data = snapshot.data ?? {};
+                  final subjects = data['subjects'] as List? ?? [];
+                  
+                  // Extract subject names for the dropdown
+                  final List<String> subjectNames = subjects
+                      .map((s) => s['name']?.toString() ?? "Unknown Subject")
+                      .toSet() // Remove duplicates
+                      .toList();
+                  
+                  // Ensure _selectedSubject is valid or default to first
+                  // Note: best handled in state but for immediate UI sync this works
+                  if (subjectNames.isNotEmpty && !subjectNames.contains(_selectedSubject)) {
+                    // Safe logic to avoid setstate during build
+                     _selectedSubject = subjectNames.first;
+                  }
+
+                  return SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                       const SizedBox(height: 20),
+                       _buildTabSelector(isDark, textColor),
+                       const SizedBox(height: 20),
+                       
+                       if (_selectedTab == 0) ...[
+                         // Updated to match Figma Styling
+                         _buildSubjectSection(subjects),
+                         const SizedBox(height: 30),
+                         _buildTodayClassesSection(isDark, cardColor),
+                         const SizedBox(height: 30),
+                         // Pass the valid dropdown list
+                         _buildAttendanceCard(subjectNames, isDark, cardColor),
+                       ] else ...[
+                         const Center(child: Padding(padding: EdgeInsets.all(20), child: Text("News & Events Feed coming soon!")))
+                       ],
+
+                       const SizedBox(height: 30),
+                       // Example News Card from Figma
+                       _buildNewsCard(isDark, cardColor),
+                       const SizedBox(height: 80), // Bottom padding
+                      ],
+                    ),
+                  );
+                }
+              ),
+            ),
+          ],
+        ),
       ),
-      body: FutureBuilder<Map<String, dynamic>>(
-        future: _analyticsFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-          if (snapshot.hasError) return Center(child: Text("Error: ${snapshot.error}"));
-          if (!snapshot.hasData) return const Center(child: Text("No Data Available"));
-          
-          final data = snapshot.data!;
-          final subjects = data['subjects'] as List;
-          final logs = data['recent_logs'] as List;
+      /* 
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const ScanScreen(subjectName: "Current Class"),
+            ),
+          );
+        }, 
+        backgroundColor: const Color(0xFF8B2072), 
+        icon: const Icon(Icons.bluetooth_searching, color: Colors.white), 
+        label: const Text("Mark Attendance", style: TextStyle(color: Colors.white))
+      ),
+      */
+    );
+  }
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildHeader(bool isDark, Color textColor) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          GestureDetector(
+            onTap: () => _showProfileSheet(isDark),
+            child: Row(
               children: [
-                PriorityNotifications(userEmail: widget.email),
-                const SizedBox(height: 20),
-                Row(children: [
-                    _buildStatCard("Streak", "${data['streak']} Days", Icons.local_fire_department, Colors.orange, isDark),
-                    const SizedBox(width: 10),
-                    _buildStatCard("Avg Rate", "${(data['monthly_rate'] as num).toStringAsFixed(0)}%", Icons.trending_up, Colors.blue, isDark),
-                ]),
-                const SizedBox(height: 15),
+                CircleAvatar(
+                  backgroundColor: Colors.purple.shade50,
+                  radius: 20,
+                  child: Text(widget.name.isNotEmpty ? widget.name[0] : "S", style: const TextStyle(color: Color(0xFF8B2072), fontWeight: FontWeight.bold)),
+                ),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("Hi, ${widget.name}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    Text(_section.isNotEmpty ? _section : "Loading...", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                  ],
+                ),
+                const SizedBox(width: 8),
+                Icon(Icons.chevron_right, size: 20, color: Colors.grey[400]),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: Icon(Icons.notifications_outlined, color: textColor),
+            onPressed: () => _showNotificationsSheet(isDark),
+          )
+        ],
+      ),
+    );
+  }
 
-                // Request Correction
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.push(context, MaterialPageRoute(builder: (context) => RequestCorrectionPage(email: widget.email)));
-                    },
-                    icon: const Icon(Icons.support_agent, color: Colors.purple),
-                    label: const Text("Request Attendance Correction", style: TextStyle(color: Colors.purple)),
-                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12), side: BorderSide(color: Colors.purple.shade200), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+  void _showProfileSheet(bool isDark) {
+    final cardColor = Theme.of(context).cardColor;
+    final textColor = Theme.of(context).textTheme.bodyLarge?.color ?? Colors.black;
+    
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.4,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) => Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Drag Handle
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[400],
+                    borderRadius: BorderRadius.circular(2),
                   ),
                 ),
-                
-                const SizedBox(height: 20),
-                Text("Your Subjects", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor)),
-                const SizedBox(height: 10),
-                GridView.builder(
-                  shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 0.8),
-                  itemCount: subjects.length,
-                  itemBuilder: (context, index) => _buildDetailedSubjectCard(context, subjects[index], isDark),
+              ),
+              const SizedBox(height: 20),
+              
+              // Profile Header
+              Center(
+                child: Column(
+                  children: [
+                    CircleAvatar(
+                      backgroundColor: const Color(0xFF8B2072),
+                      radius: 40,
+                      child: Text(
+                        widget.name.isNotEmpty ? widget.name[0].toUpperCase() : "S",
+                        style: const TextStyle(fontSize: 32, color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      widget.name,
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: textColor),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      widget.email,
+                      style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF8B2072).withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        _section.isNotEmpty ? _section : "Section not set",
+                        style: const TextStyle(color: Color(0xFF8B2072), fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 20),
-                Text("Recent Activity", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor)),
-                const SizedBox(height: 10),
-                ListView.builder(
-                  shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: logs.length,
-                  itemBuilder: (context, index) {
-                    final log = logs[index];
-                    final date = DateTime.parse(log['check_in_time']).toLocal();
-                    return ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(8)), child: const Icon(Icons.check, size: 16, color: Colors.green)),
-                      title: Text(log['class_name'], style: TextStyle(fontWeight: FontWeight.bold, color: textColor)),
-                      subtitle: Text(DateFormat('MMM dd • hh:mm a').format(date), style: const TextStyle(color: Colors.grey)),
-                      trailing: const Text("Present", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+              ),
+              const SizedBox(height: 24),
+              
+              // Details Section
+              _buildProfileDetailRow(Icons.email_outlined, "Email", widget.email, isDark),
+              _buildProfileDetailRow(Icons.school_outlined, "Section", _section.isNotEmpty ? _section : "Not set", isDark),
+              
+              const SizedBox(height: 24),
+              
+              // Teachers Section
+              Text(
+                "My Teachers",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor),
+              ),
+              const SizedBox(height: 12),
+              
+              // Fetch and display teachers
+              Expanded(
+                child: FutureBuilder<List<Map<String, dynamic>>>(
+                  future: _getStudentTeachers(),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    
+                    if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.person_off_outlined, size: 48, color: Colors.grey[400]),
+                            const SizedBox(height: 8),
+                            Text("No teachers found", style: TextStyle(color: Colors.grey[500])),
+                          ],
+                        ),
+                      );
+                    }
+                    
+                    return ListView.builder(
+                      controller: scrollController,
+                      itemCount: snapshot.data!.length,
+                      itemBuilder: (context, index) {
+                        final teacher = snapshot.data![index];
+                        return _buildTeacherTile(teacher, isDark, cardColor);
+                      },
                     );
                   },
                 ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProfileDetailRow(IconData icon, String label, String value, bool isDark) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: isDark ? Colors.grey[800] : Colors.grey[100],
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: const Color(0xFF8B2072), size: 20),
+          ),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+              Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTeacherTile(Map<String, dynamic> teacher, bool isDark, Color cardColor) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: isDark ? Colors.grey[800] : Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: isDark ? Colors.grey[700]! : Colors.grey[200]!),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            backgroundColor: Colors.blue.shade100,
+            radius: 22,
+            child: Text(
+              (teacher['professor'] ?? teacher['name'] ?? 'T')[0].toUpperCase(),
+              style: TextStyle(color: Colors.blue.shade700, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  teacher['professor'] ?? teacher['name'] ?? 'Unknown Teacher',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  teacher['subject_code'] ?? 'Subject not specified',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFF8B2072).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              teacher['room_number'] ?? 'TBA',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF8B2072), fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _getStudentTeachers() async {
+    if (_section.isEmpty) return [];
+    
+    try {
+      // Get all timetable entries for this section (which includes classes student added)
+      final timetable = await Supabase.instance.client
+          .from('timetable')
+          .select('professor, subject_code, room_number')
+          .eq('section', _section);
+      
+      // Group by professor and collect all their subjects
+      final Map<String, Map<String, dynamic>> teacherMap = {};
+      
+      for (var entry in timetable) {
+        final prof = entry['professor']?.toString() ?? '';
+        if (prof.isEmpty) continue;
+        
+        if (!teacherMap.containsKey(prof)) {
+          teacherMap[prof] = {
+            'professor': prof,
+            'subjects': <String>[],
+            'room_number': entry['room_number'] ?? 'TBA',
+          };
+        }
+        
+        // Add subject if not already in list
+        final subject = entry['subject_code']?.toString() ?? '';
+        if (subject.isNotEmpty) {
+          final subjects = teacherMap[prof]!['subjects'] as List<String>;
+          if (!subjects.contains(subject)) {
+            subjects.add(subject);
+          }
+        }
+      }
+      
+      // Convert subjects list to comma-separated string
+      return teacherMap.values.map((teacher) {
+        final subjects = teacher['subjects'] as List<String>;
+        return {
+          'professor': teacher['professor'],
+          'subject_code': subjects.join(', '),
+          'room_number': teacher['room_number'],
+        };
+      }).toList();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  void _showNotificationsSheet(bool isDark) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? Colors.grey[900] : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) => Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[400],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                "Notifications",
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white : Colors.black,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Expanded(
+                child: FutureBuilder<Map<String, dynamic>>(
+                  future: DatabaseService().fetchDashboardAlerts(widget.email),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    
+                    final cancellations = (snapshot.data?['cancellations'] as List?) ?? [];
+                    final attendanceAlerts = (snapshot.data?['attendance'] as List?) ?? [];
+                    
+                    if (cancellations.isEmpty && attendanceAlerts.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.notifications_off_outlined, size: 64, color: Colors.grey[400]),
+                            const SizedBox(height: 16),
+                            Text(
+                              "No notifications",
+                              style: TextStyle(fontSize: 16, color: Colors.grey[500]),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              "You're all caught up! 🎉",
+                              style: TextStyle(fontSize: 14, color: Colors.grey[400]),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                    
+                    return ListView(
+                      controller: scrollController,
+                      children: [
+                        // Class Cancellations
+                        ...cancellations.map((c) => _buildNotificationTile(
+                          icon: Icons.cancel_outlined,
+                          iconColor: Colors.red,
+                          title: "Class Cancelled",
+                          subtitle: "${c['subject'] ?? 'Unknown'} on ${c['date'] ?? 'TBD'}",
+                          time: c['created_at']?.toString().substring(0, 10) ?? '',
+                          isDark: isDark,
+                        )),
+                        // Attendance Alerts
+                        ...attendanceAlerts.map((a) {
+                          final pct = (a['percentage'] as num?)?.toInt() ?? 0;
+                          final isLow = pct < 75;
+                          return _buildNotificationTile(
+                            icon: isLow ? Icons.warning_amber_rounded : Icons.check_circle_outline,
+                            iconColor: isLow ? Colors.orange : Colors.green,
+                            title: isLow ? "Low Attendance Warning" : "Good Attendance",
+                            subtitle: "${a['name'] ?? 'Subject'}: $pct%",
+                            time: "",
+                            isDark: isDark,
+                          );
+                        }),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNotificationTile({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required String time,
+    required bool isDark,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark ? Colors.grey[800] : Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: isDark ? Colors.grey[700]! : Colors.grey[200]!),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: iconColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: iconColor, size: 24),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(fontWeight: FontWeight.bold, color: isDark ? Colors.white : Colors.black)),
+                const SizedBox(height: 4),
+                Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+              ],
+            ),
+          ),
+          if (time.isNotEmpty)
+            Text(time, style: TextStyle(fontSize: 10, color: Colors.grey[400])),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabSelector(bool isDark, Color textColor) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      decoration: BoxDecoration(
+        color: isDark ? Colors.grey[800] : const Color(0xFFF4F3FF),
+        borderRadius: BorderRadius.circular(16)
+      ),
+      padding: const EdgeInsets.all(4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+           _buildTabItem("Home", 0, isDark, textColor),
+           _buildTabItem("News", 1, isDark, textColor),
+           _buildTabItem("Events", 2, isDark, textColor),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabItem(String text, int index, bool isDark, Color textColor) {
+    bool isSelected = _selectedTab == index;
+    return GestureDetector(
+      onTap: () => setState(() => _selectedTab = index),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? (isDark ? Colors.grey[700] : Colors.white) : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: isSelected ? [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 4, offset: const Offset(0,2))] : []
+        ),
+        child: Text(
+          text,
+          style: TextStyle(
+            color: isSelected ? textColor : const Color(0xFF939393),
+            fontWeight: FontWeight.w600,
+            fontSize: 14
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSubjectSection(List<dynamic> subjects) {
+    if (subjects.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 24),
+        child: Text("No subjects found."),
+      );
+    }
+
+    return SizedBox(
+      height: 105, // Updated Height to match Figma
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        scrollDirection: Axis.horizontal,
+        itemCount: subjects.length,
+        itemBuilder: (context, index) {
+          final subject = subjects[index];
+          // Use real percentage for "indicator" if needed, but styling strictly matches Figma
+          // double pct = (subject['percentage'] as num).toDouble();
+          
+          return Container(
+            width: 87, // Figma Width
+            margin: const EdgeInsets.only(right: 12), // Spacing
+            decoration: ShapeDecoration(
+              image: const DecorationImage(
+                image: NetworkImage("https://placehold.co/87x105/png"), // Placeholder from Figma
+                fit: BoxFit.cover,
+              ),
+              shape: RoundedRectangleBorder(
+                side: const BorderSide(
+                  width: 3, 
+                  color: Color(0xFF8B2072) // Figma Purple Border
+                ),
+                borderRadius: BorderRadius.circular(8), // Figma Radius
+              ),
+            ),
+            child: Stack(
+              children: [
+                // Optional: Gradient to make white text readable on light images
+                Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(5), // Inner radius
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Colors.transparent, Colors.black.withValues(alpha: 0.6)]
+                    )
+                  ),
+                ),
+                // Subject Name at Bottom Left
+                Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 8, bottom: 8, right: 4),
+                    child: Text(
+                      subject['name'] ?? "Unknown",
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10, // Figma had 8, bumping slightly for readability
+                        // fontFamily: 'Poppins', // Inherited from Theme
+                        fontWeight: FontWeight.w500,
+                        height: 1.13,
+                      ),
+                    ),
+                  ),
+                ),
+                // Percentage Badge (Top Right) - Kept for functionality
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(color: const Color(0xFF8B2072).withValues(alpha: 0.8), borderRadius: BorderRadius.circular(4)),
+                    child: Text(
+                      "${(subject['percentage'] as num).toInt()}%",
+                      style: const TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                )
               ],
             ),
           );
         },
       ),
-      floatingActionButton: FloatingActionButton.extended(onPressed: () => _markAttendance(context), backgroundColor: Colors.purple, icon: const Icon(Icons.bluetooth_searching, color: Colors.white), label: const Text("Mark Attendance", style: TextStyle(color: Colors.white))),
     );
   }
 
-  Widget _buildStatCard(String title, String value, IconData icon, Color color, bool isDark) {
-    return Expanded(child: Container(
-      padding: const EdgeInsets.all(16), 
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor, // 🟢 Fix
-        borderRadius: BorderRadius.circular(12), 
-        border: Border.all(color: isDark ? Colors.grey.shade800 : Colors.grey.shade200)
-      ), 
-      child: Row(children: [
-        Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: color.withValues(alpha: 0.1), shape: BoxShape.circle), child: Icon(icon, color: color)), 
-        const SizedBox(width: 10), 
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(value, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Theme.of(context).textTheme.bodyLarge?.color)), 
-          Text(title, style: const TextStyle(color: Colors.grey, fontSize: 12))
-        ])
-      ])
-    ));
-  }
+  Widget _buildTodayClassesSection(bool isDark, Color cardColor) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text("Today's Classes", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              TextButton(
+                onPressed: () {
+                   // Switch to Timetable tab
+                   final _StudentScreenState? parent = context.findAncestorStateOfType<_StudentScreenState>();
+                   if (parent != null) {
+                     parent.setState(() {
+                       parent._currentIndex = 1; // Switch to Timetable
+                     });
+                   }
+                }, 
+                child: const Text("Open schedule", style: TextStyle(color: Color(0xFF8B2072), fontWeight: FontWeight.w600)),
+              )
+            ],
+          ),
+          const SizedBox(height: 12),
+          
+          FutureBuilder<String>(
+            future: DatabaseService().getStudentSection(widget.email),
+            builder: (context, sectionSnap) {
+              if (!sectionSnap.hasData) return const Center(child: CircularProgressIndicator());
+              final section = sectionSnap.data!;
+              final today = DateTime.now().weekday;
 
-  Widget _buildDetailedSubjectCard(BuildContext context, Map<String, dynamic> subject, bool isDark) {
-    double pct = (subject['percentage'] as num).toDouble();
-    Color color = pct >= 85 ? Colors.green : (pct >= 75 ? Colors.orange : Colors.red);
-    int needed = subject['needed'];
-    return GestureDetector(
-      onTap: () => _showDetailedModal(context, subject),
-      child: Container(
-        padding: const EdgeInsets.all(16), 
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardColor, // 🟢 Fix
-          borderRadius: BorderRadius.circular(16), 
-          border: Border.all(color: color.withValues(alpha: 0.3), width: 1)
-        ), 
-        child: Column(mainAxisAlignment: MainAxisAlignment.spaceBetween, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(subject['code'], style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.bold)), 
-            const SizedBox(height: 5), 
-            Text(subject['name'], maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Theme.of(context).textTheme.bodyLarge?.color)), 
-            Text("${subject['attended']}/${subject['total']} Classes", style: const TextStyle(color: Colors.grey, fontSize: 12))
-          ]), 
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text("${pct.toInt()}%", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color)), 
-            if (needed > 0) Text("+$needed needed", style: const TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.bold)), 
-            const SizedBox(height: 5), 
-            LinearProgressIndicator(value: pct / 100, backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade100, color: color, minHeight: 6, borderRadius: BorderRadius.circular(10))
-          ])
-        ])
+              return StreamBuilder<List<Map<String, dynamic>>>(
+                stream: Supabase.instance.client
+                    .from('timetable')
+                    .stream(primaryKey: ['id'])
+                    .eq('section', section)
+                    .order('start_time', ascending: true),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                     return _buildEmptyState("No classes found.", isDark);
+                  }
+
+                  final allData = snapshot.data!;
+                  final todayClasses = allData.where((c) => c['day_of_week'] == today).toList();
+
+                  if (todayClasses.isEmpty) {
+                    return _buildEmptyState("No classes scheduled for today! 🎉", isDark);
+                  }
+
+                  return Column(
+                    children: todayClasses.map((c) {
+                      int h = int.parse(c['start_time'].toString().split(':')[0]);
+                      // Simple Time formatting
+                      String startTime = "${h > 12 ? h - 12 : h}:00 ${h >= 12 ? 'PM' : 'AM'}";
+                      int endH = h + 1; // Assuming 1 hour duration for simplicity if not stored
+                      String endTime = "${endH > 12 ? endH - 12 : endH}:00 ${endH >= 12 ? 'PM' : 'AM'}";
+
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12.0),
+                        child: _buildClassCard(
+                          title: c['subject_code'] ?? 'Unknown Subject',
+                          time: "$startTime - $endTime",
+                          subtitle: "${c['professor'] ?? 'Staff'} • ${c['room_number'] ?? 'TBA'}",
+                          color: cardColor,
+                          isDark: isDark,
+                        ),
+                      );
+                    }).toList(),
+                  );
+                },
+              );
+            },
+          ),
+        ],
       ),
     );
   }
 
-  void _showDetailedModal(BuildContext context, Map<String, dynamic> subject) {
-    double pct = (subject['percentage'] as num).toDouble();
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+  Widget _buildAttendanceCard(List<String> availableSubjects, bool isDark, Color cardColor) {
+     // Fallback if list is empty
+    final displaySubjects = availableSubjects.isNotEmpty ? availableSubjects : ['No Subjects'];
 
-    showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: Colors.transparent, builder: (context) => DraggableScrollableSheet(initialChildSize: 0.8, minChildSize: 0.5, maxChildSize: 0.95, builder: (_, controller) => Container(
-      decoration: BoxDecoration(color: Theme.of(context).cardColor, borderRadius: const BorderRadius.vertical(top: Radius.circular(20))), 
-      child: FutureBuilder<List<Map<String, dynamic>>>(future: DatabaseService().fetchSubjectHistory(widget.email, subject['name']), builder: (context, snapshot) {
-          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-          final logs = snapshot.data ?? [];
-          return ListView(controller: controller, padding: const EdgeInsets.all(20), children: [
-              Center(child: Container(width: 40, height: 5, decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(10)))), const SizedBox(height: 20),
-              Text(subject['name'], style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)), Text("Course Code: ${subject['code']}", style: const TextStyle(color: Colors.grey)), const Divider(height: 30),
-              SizedBox(height: 200, child: PieChart(PieChartData(sections: [PieChartSectionData(value: pct, color: Colors.green, title: "${pct.toInt()}%", radius: 50, titleStyle: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)), PieChartSectionData(value: 100.0 - pct, color: isDark ? Colors.grey.shade800 : Colors.grey.shade200, title: "", radius: 50)], centerSpaceRadius: 40))),
-              const Center(child: Text("Attendance Distribution", style: TextStyle(fontWeight: FontWeight.bold))), const SizedBox(height: 30),
-              const Text("Class History", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 10),
-              Container(decoration: BoxDecoration(color: isDark ? Colors.grey.shade900 : Colors.grey.shade50, borderRadius: BorderRadius.circular(12)), child: logs.isEmpty ? const Padding(padding: EdgeInsets.all(20), child: Center(child: Text("No classes attended yet."))) : ListView.separated(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), itemCount: logs.length, separatorBuilder: (context, index) => const Divider(height: 1), itemBuilder: (context, index) { final log = logs[index]; final date = DateTime.parse(log['check_in_time']).toLocal(); return ListTile(title: Text(DateFormat('EEEE, MMM dd').format(date), style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text(DateFormat('hh:mm a').format(date)), trailing: const Text("Present", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold))); })),
-              const SizedBox(height: 20),
-              SizedBox(width: double.infinity, child: ElevatedButton.icon(onPressed: logs.isEmpty ? null : () => _generatePdf(subject['name'], logs), style: ElevatedButton.styleFrom(backgroundColor: Colors.purple, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 15)), icon: const Icon(Icons.download), label: const Text("Download Official Report")))
-          ]);
-    }))));
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            const Text("Select Subject to Mark Attendance", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            // Subject Dropdown
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey.shade300),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: (displaySubjects.contains(_selectedSubject)) ? _selectedSubject : displaySubjects.first,
+                  isExpanded: true,
+                  items: displaySubjects.map((String value) {
+                    return DropdownMenuItem<String>(
+                      value: value,
+                      child: Text(value),
+                    );
+                  }).toList(),
+                  onChanged: (newValue) {
+                    if (newValue == null || newValue == 'No Subjects') return;
+                    setState(() {
+                      _selectedSubject = newValue;
+                    });
+                  },
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+
+            // The "Scan" Button
+            ElevatedButton.icon(
+              icon: const Icon(Icons.radar, color: Colors.white),
+              label: const Text("SCAN FOR CLASS", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFF59E0B), // Gold Color
+                minimumSize: const Size(double.infinity, 50),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: () {
+                // Navigate to the Scanning Animation Screen
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ScanScreen(subjectName: _selectedSubject),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(String message, bool isDark) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: isDark ? Colors.grey[800] : const Color(0xFFF4F3FF),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFCACACA)),
+      ),
+      child: Center(
+        child: Text(
+          message,
+          style: const TextStyle(color: Color(0xFF939393), fontStyle: FontStyle.italic),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildClassCard({required String title, required String time, required String subtitle, required Color color, required bool isDark}) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark ? Colors.grey[850] : color,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFCACACA)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 4, height: 40,
+            decoration: BoxDecoration(color: const Color(0xFF8B2072), borderRadius: BorderRadius.circular(2)),
+          ),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 4),
+              Text(time, style: const TextStyle(color: Color(0xFF939393), fontSize: 12)),
+              const SizedBox(height: 4),
+              Text(subtitle, style: const TextStyle(color: Color(0xFF939393), fontSize: 12)),
+            ],
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNewsCard(bool isDark, Color cardColor) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))],
+        border: Border.all(color: const Color(0xFFCACACA)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                decoration: BoxDecoration(color: isDark ? Colors.purple.withValues(alpha: 0.2) : const Color(0xFFECEBF8), borderRadius: BorderRadius.circular(20)),
+                child: const Text("May 01", style: TextStyle(color: Color(0xFF8B2072), fontSize: 10, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            "The Federal Board of Intermediate and Secondary Education (FBISE) has officially announced...",
+            style: TextStyle(fontSize: 12, color: Color(0xFF939393)),
+          ),
+        ],
+      ),
+    );
   }
 }
 
 // ==========================================
-// 3. TIMETABLE PAGE
+// 3. MATERIALS PAGE
+// ==========================================
+class MaterialsPage extends StatefulWidget {
+  final String email;
+  const MaterialsPage({super.key, required this.email});
+  @override
+  State<MaterialsPage> createState() => _MaterialsPageState();
+}
+
+class _MaterialsPageState extends State<MaterialsPage> {
+  String _selectedFilter = 'All';
+  final List<String> _filters = ['All', 'PDF', 'Video', 'Link'];
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = Theme.of(context).scaffoldBackgroundColor;
+    final cardColor = Theme.of(context).cardColor;
+    final textColor = Theme.of(context).textTheme.bodyLarge?.color ?? Colors.black;
+
+    return Scaffold(
+      backgroundColor: bgColor,
+      appBar: AppBar(
+        title: const Text("Study Materials"),
+        automaticallyImplyLeading: false,
+        elevation: 0,
+      ),
+      body: Column(
+        children: [
+          // Filter Chips
+          Container(
+            height: 50,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _filters.length,
+              itemBuilder: (context, index) {
+                final filter = _filters[index];
+                final isSelected = _selectedFilter == filter;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: FilterChip(
+                    label: Text(filter),
+                    selected: isSelected,
+                    onSelected: (selected) {
+                      setState(() => _selectedFilter = filter);
+                    },
+                    selectedColor: const Color(0xFF8B2072),
+                    labelStyle: TextStyle(
+                      color: isSelected ? Colors.white : textColor,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    backgroundColor: isDark ? Colors.grey[800] : Colors.grey[200],
+                    checkmarkColor: Colors.white,
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+          // Materials List
+          Expanded(
+            child: StreamBuilder<List<Map<String, dynamic>>>(
+              stream: DatabaseService().streamStudentMaterials(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                
+                if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.folder_open_outlined, size: 80, color: Colors.grey[400]),
+                        const SizedBox(height: 16),
+                        Text(
+                          "No materials yet",
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          "Materials shared by your teachers\nwill appear here",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.grey[500]),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                var materials = snapshot.data!;
+                
+                // Apply filter
+                if (_selectedFilter != 'All') {
+                  materials = materials.where((m) => 
+                    (m['resource_type']?.toString().toUpperCase() ?? '') == _selectedFilter.toUpperCase()
+                  ).toList();
+                }
+
+                if (materials.isEmpty) {
+                  return Center(
+                    child: Text(
+                      "No $_selectedFilter materials found",
+                      style: TextStyle(color: Colors.grey[500]),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: materials.length,
+                  itemBuilder: (context, index) {
+                    final material = materials[index];
+                    return _buildMaterialCard(material, isDark, cardColor, textColor);
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMaterialCard(Map<String, dynamic> material, bool isDark, Color cardColor, Color textColor) {
+    final type = material['resource_type']?.toString() ?? 'PDF';
+    final IconData icon;
+    final Color iconColor;
+    
+    switch (type.toUpperCase()) {
+      case 'VIDEO':
+        icon = Icons.play_circle_filled;
+        iconColor = Colors.red;
+        break;
+      case 'LINK':
+        icon = Icons.link;
+        iconColor = Colors.blue;
+        break;
+      case 'PDF':
+      default:
+        icon = Icons.picture_as_pdf;
+        iconColor = Colors.orange;
+    }
+
+    // Format date
+    String dateStr = '';
+    if (material['created_at'] != null) {
+      try {
+        final date = DateTime.parse(material['created_at'].toString());
+        final now = DateTime.now();
+        final diff = now.difference(date);
+        if (diff.inDays == 0) {
+          dateStr = 'Today';
+        } else if (diff.inDays == 1) {
+          dateStr = 'Yesterday';
+        } else if (diff.inDays < 7) {
+          dateStr = '${diff.inDays} days ago';
+        } else {
+          dateStr = '${date.day}/${date.month}/${date.year}';
+        }
+      } catch (e) {
+        dateStr = '';
+      }
+    }
+
+    return Card(
+      color: cardColor,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _openMaterial(material),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: iconColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: iconColor, size: 28),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      material['title'] ?? 'Untitled',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: textColor),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF8B2072).withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            material['subject_code'] ?? 'General',
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF8B2072), fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          type,
+                          style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                        ),
+                      ],
+                    ),
+                    if (dateStr.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        dateStr,
+                        style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey[400]),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openMaterial(Map<String, dynamic> material) async {
+    final url = material['file_url']?.toString();
+    if (url == null || url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("No file URL available"), backgroundColor: Colors.red),
+      );
+      return;
+    }
+    
+    // Show a dialog with options
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(material['title'] ?? 'Material'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("Subject: ${material['subject_code'] ?? 'Unknown'}"),
+            const SizedBox(height: 8),
+            Text("Type: ${material['resource_type'] ?? 'PDF'}"),
+            const SizedBox(height: 16),
+            Text(
+              "URL: $url",
+              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Close"),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              // In a real app, use url_launcher to open the URL
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text("Opening: ${material['title']}")),
+              );
+            },
+            icon: const Icon(Icons.open_in_new, size: 18),
+            label: const Text("Open"),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF8B2072),
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ==========================================
+// 4. TIMETABLE PAGE
 // ==========================================
 class TimetablePage extends StatefulWidget {
   final String email;
@@ -421,6 +1332,18 @@ class TimetablePage extends StatefulWidget {
 class _TimetablePageState extends State<TimetablePage> {
   int _selectedDay = 1; 
   String _getDayName(int day) => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day - 1];
+  String? _section;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSection();
+  }
+
+  void _loadSection() async {
+    final s = await DatabaseService().getStudentSection(widget.email);
+    if (mounted) setState(() => _section = s);
+  }
 
   void _showAddDialog(BuildContext context) {
     // [Keeping dialog logic same]
@@ -430,11 +1353,33 @@ class _TimetablePageState extends State<TimetablePage> {
     int selectedTime = 9; 
 
     showDialog(context: context, builder: (context) => StatefulBuilder(builder: (context, setDialogState) {
-          return AlertDialog(title: Text("Add Class for ${_getDayName(_selectedDay)}"), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: subjectCtrl, decoration: const InputDecoration(labelText: "Subject Name", icon: Icon(Icons.book))), TextField(controller: profCtrl, decoration: const InputDecoration(labelText: "Professor", icon: Icon(Icons.person))), TextField(controller: roomCtrl, decoration: const InputDecoration(labelText: "Room", icon: Icon(Icons.room))), const SizedBox(height: 20), Row(children: [const Icon(Icons.access_time, color: Colors.grey), const SizedBox(width: 15), const Text("Time: "), DropdownButton<int>(value: selectedTime, items: List.generate(9, (index) { int hour = 9 + index; return DropdownMenuItem(value: hour, child: Text("${hour > 12 ? hour - 12 : hour}:00 ${hour >= 12 ? 'PM' : 'AM'}")); }), onChanged: (val) => setDialogState(() => selectedTime = val!))])])), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), ElevatedButton(onPressed: () async { if (subjectCtrl.text.isNotEmpty) { await DatabaseService().addTimetableEntry(widget.email, _selectedDay, selectedTime, subjectCtrl.text, profCtrl.text, roomCtrl.text); if (context.mounted) Navigator.pop(context); } }, child: const Text("Add"))]);
+          return AlertDialog(title: Text("Add Class for ${_getDayName(_selectedDay)}"), content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [TextField(controller: subjectCtrl, decoration: const InputDecoration(labelText: "Subject Name", icon: Icon(Icons.book))), TextField(controller: profCtrl, decoration: const InputDecoration(labelText: "Professor", icon: Icon(Icons.person))), TextField(controller: roomCtrl, decoration: const InputDecoration(labelText: "Room", icon: Icon(Icons.room))), const SizedBox(height: 20), Row(children: [const Icon(Icons.access_time, color: Colors.grey), const SizedBox(width: 15), const Text("Time: "), DropdownButton<int>(value: selectedTime, items: List.generate(9, (index) { int hour = 9 + index; return DropdownMenuItem(value: hour, child: Text("${hour > 12 ? hour - 12 : hour}:00 ${hour >= 12 ? 'PM' : 'AM'}")); }), onChanged: (val) => setDialogState(() => selectedTime = val!))])])), actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")), ElevatedButton(onPressed: () async { 
+            if (subjectCtrl.text.isNotEmpty) { 
+              try {
+                // Use safe manual add method
+                await DatabaseService().addStudentClass(
+                  subject: subjectCtrl.text,
+                  professor: profCtrl.text,
+                  room: roomCtrl.text,
+                  day: _selectedDay.toString(),
+                  time: selectedTime.toString(),
+                  section: _section ?? 'Unknown',
+                ); 
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Class added successfully!"), backgroundColor: Colors.green));
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error adding class: $e"), backgroundColor: Colors.red));
+                }
+              }
+            } 
+          }, child: const Text("Add"))]);
       }));
   }
 
-  void _deleteEntry(String id) {
+  void _deleteEntry(dynamic id) {
     DatabaseService().deleteTimetableEntry(id);
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Class deleted")));
   }
@@ -473,17 +1418,22 @@ class _TimetablePageState extends State<TimetablePage> {
   }
 
   Widget _buildDaySchedule(bool isDark, Color cardColor, Color? textColor) {
-    return FutureBuilder<String>(future: DatabaseService().getStudentSection(widget.email), builder: (context, sectionSnap) {
-        if (!sectionSnap.hasData) return const Center(child: CircularProgressIndicator());
-        String section = sectionSnap.data!;
-        return StreamBuilder<List<Map<String, dynamic>>>(stream: Supabase.instance.client.from('timetable').stream(primaryKey: ['id']).eq('section', section).order('start_hour', ascending: true), builder: (context, snapshot) {
+    if (_section == null) return const Center(child: CircularProgressIndicator());
+    
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: Supabase.instance.client.from('timetable').stream(primaryKey: ['id']).eq('section', _section!).order('start_time', ascending: true), 
+      builder: (context, snapshot) {
             if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
             final allClasses = snapshot.data!;
-            final classes = allClasses.where((c) => c['day_of_week'] == _selectedDay).toList();
+            final classes = allClasses.where((c) {
+              final dayValue = c['day_of_week'];
+              final dayInt = dayValue is int ? dayValue : int.tryParse(dayValue.toString()) ?? 0;
+              return dayInt == _selectedDay;
+            }).toList();
             if (classes.isEmpty) return const Center(child: Text("No classes today. Tap + to add."));
-            return ListView.builder(padding: const EdgeInsets.all(16), itemCount: classes.length, itemBuilder: (context, index) { final item = classes[index]; int h = item['start_hour']; String time = "${h > 12 ? h - 12 : h}:00 ${h >= 12 ? 'PM' : 'AM'}"; return Dismissible(key: Key(item['id']), direction: DismissDirection.endToStart, background: Container(color: Colors.red, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete, color: Colors.white)), onDismissed: (_) => _deleteEntry(item['id']), child: Card(color: cardColor, elevation: 2, margin: const EdgeInsets.only(bottom: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), child: ListTile(leading: Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: isDark ? Colors.purple.withValues(alpha: 0.2) : Colors.purple.shade50, borderRadius: BorderRadius.circular(8)), child: Text(time.split(' ')[0], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple))), title: Text(item['subject'], style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text("${item['professor']} • ${item['room_number']}")))); });
-        });
-    });
+            return ListView.builder(padding: const EdgeInsets.all(16), itemCount: classes.length, itemBuilder: (context, index) { final item = classes[index]; int h = int.parse(item['start_time'].toString().split(':')[0]); String time = "${h > 12 ? h - 12 : h}:00 ${h >= 12 ? 'PM' : 'AM'}"; return Dismissible(key: Key(item['id'].toString()), direction: DismissDirection.endToStart, background: Container(color: Colors.red, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete, color: Colors.white)), onDismissed: (_) => _deleteEntry(item['id']), child: Card(color: cardColor, elevation: 2, margin: const EdgeInsets.only(bottom: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), child: ListTile(leading: Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: isDark ? Colors.purple.withValues(alpha: 0.2) : Colors.purple.shade50, borderRadius: BorderRadius.circular(8)), child: Text(time.split(' ')[0], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple))), title: Text(item['subject_code'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text("${item['professor'] ?? 'Staff'} • ${item['room_number']}")))); });
+      }
+    );
   }
 }
 
@@ -531,7 +1481,7 @@ class _PriorityNotificationsState extends State<PriorityNotifications> {
   }
 
   Widget _buildUpcomingClassCard(Map<String, dynamic> classData, bool isDark) {
-    int hour = classData['start_hour'];
+    int hour = int.parse(classData['start_time'].toString().split(':')[0]);
     String timeString = "${hour > 12 ? hour - 12 : hour}:00 ${hour >= 12 ? 'PM' : 'AM'}";
     return Container(
       margin: const EdgeInsets.only(bottom: 10), 
@@ -546,7 +1496,7 @@ class _PriorityNotificationsState extends State<PriorityNotifications> {
         const Icon(Icons.access_time_filled, color: Colors.blue), 
         const SizedBox(width: 15), 
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text("UPCOMING: ${classData['subject']}", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: isDark ? Colors.blue.shade100 : Colors.black)), 
+          Text("UPCOMING: ${classData['subject_code']}", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: isDark ? Colors.blue.shade100 : Colors.black)), 
           Text("${classData['professor']} • ${classData['room_number']}", style: TextStyle(color: isDark ? Colors.white70 : Colors.black87)), 
           Text("Starts at $timeString", style: TextStyle(color: Colors.blue.shade800, fontSize: 12, fontWeight: FontWeight.bold))
         ]))
@@ -583,10 +1533,26 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
-    bool isDarkMode = themeNotifier.value == ThemeMode.dark;
+    final isDarkMode = themeNotifier.value == ThemeMode.dark;
     return Scaffold(
       appBar: AppBar(title: const Text("Settings"), automaticallyImplyLeading: false),
-      body: ListView(children: [const SizedBox(height: 20), ListTile(leading: CircleAvatar(backgroundColor: Colors.purple.shade100, child: Text(widget.name[0], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple))), title: Text(widget.name), subtitle: Text(widget.email)), const Divider(), SwitchListTile(title: const Text("Dark Mode"), secondary: const Icon(Icons.dark_mode_outlined), value: isDarkMode, onChanged: (bool value) { setState(() { themeNotifier.value = value ? ThemeMode.dark : ThemeMode.light; }); }), const Divider(), ListTile(leading: const Icon(Icons.logout, color: Colors.red), title: const Text("Log Out", style: TextStyle(color: Colors.red)), onTap: () async {
+      body: ListView(children: [
+        const SizedBox(height: 20),
+        ListTile(leading: CircleAvatar(backgroundColor: Colors.purple.shade100, child: Text(widget.name[0], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple))), title: Text(widget.name), subtitle: Text(widget.email)),
+        const Divider(),
+        SwitchListTile(title: const Text("Dark Mode"), secondary: const Icon(Icons.dark_mode_outlined), value: isDarkMode, onChanged: (bool value) { setState(() { themeNotifier.value = value ? ThemeMode.dark : ThemeMode.light; }); }),
+        const Divider(),
+        // [NEW] Correction Request Tile
+        ListTile(
+          leading: const Icon(Icons.assignment_late_outlined, color: Colors.orange),
+          title: const Text("Request Attendance Correction"),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => RequestCorrectionPage(email: widget.email)));
+          },
+        ),
+        const Divider(),
+        ListTile(leading: const Icon(Icons.logout, color: Colors.red), title: const Text("Log Out", style: TextStyle(color: Colors.red)), onTap: () async {
         await Supabase.instance.client.auth.signOut();
         if (context.mounted) {
            Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const LoginScreen()), (route) => false);
@@ -596,88 +1562,4 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
-// ==========================================
-// 6. REQUEST CORRECTION PAGE
-// ==========================================
-class RequestCorrectionPage extends StatefulWidget {
-  final String email;
-  const RequestCorrectionPage({super.key, required this.email});
-
-  @override
-  State<RequestCorrectionPage> createState() => _RequestCorrectionPageState();
-}
-
-class _RequestCorrectionPageState extends State<RequestCorrectionPage> {
-  String _selectedType = 'Medical Leave';
-  final TextEditingController _reasonController = TextEditingController();
-  final TextEditingController _subjectsController = TextEditingController();
-  DateTimeRange? _selectedDateRange;
-  File? _selectedFile;
-  String? _fileName;
-  bool _isUploading = false;
-  final List<String> _requestTypes = ['Medical Leave', 'College Event', 'General Inquiry'];
-
-  // ... [File pick and Date pick functions kept same]
-  Future<void> _pickFile() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['jpg', 'png', 'pdf']);
-    if (result != null) {
-      if (result.files.single.size > 5 * 1024 * 1024) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File too large! Max 5MB.")));
-        return;
-      }
-      setState(() { _selectedFile = File(result.files.single.path!); _fileName = result.files.single.name; });
-    }
-  }
-
-  Future<void> _pickDateRange() async {
-    DateTimeRange? picked = await showDateRangePicker(context: context, firstDate: DateTime(2024), lastDate: DateTime(2026), builder: (context, child) => Theme(data: ThemeData.light().copyWith(primaryColor: Colors.purple, colorScheme: const ColorScheme.light(primary: Colors.purple)), child: child!));
-    if (picked != null) setState(() => _selectedDateRange = picked);
-  }
-
-  Future<void> _submitRequest() async {
-    if (_selectedDateRange == null || _subjectsController.text.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please fill all required fields!"))); return; }
-    if ((_selectedType == 'Medical Leave' || _selectedType == 'College Event') && _selectedFile == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please upload proof document!"))); return; }
-
-    setState(() => _isUploading = true);
-    try {
-      String dateString = "${DateFormat('yyyy-MM-dd').format(_selectedDateRange!.start)} to ${DateFormat('yyyy-MM-dd').format(_selectedDateRange!.end)}";
-      await DatabaseService().submitCorrectionRequest(email: widget.email, type: _selectedType, dates: dateString, subjects: _subjectsController.text, reason: _reasonController.text.isEmpty ? "No description" : _reasonController.text, file: _selectedFile, fileName: _fileName);
-      if (mounted) { Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Request Submitted Successfully!"), backgroundColor: Colors.green)); }
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red));
-    } finally {
-      if (mounted) setState(() => _isUploading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    
-    return Scaffold(
-      appBar: AppBar(title: const Text("Request Correction")),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text("Request Type", style: TextStyle(fontWeight: FontWeight.bold)), const SizedBox(height: 5),
-            Container(padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(8)), child: DropdownButtonHideUnderline(child: DropdownButton<String>(value: _selectedType, isExpanded: true, items: _requestTypes.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (val) => setState(() => _selectedType = val!)))),
-            const SizedBox(height: 20),
-            Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: isDark ? Colors.blue.withValues(alpha: 0.2) : Colors.blue.shade50, borderRadius: BorderRadius.circular(8)), child: Row(children: [const Icon(Icons.info, color: Colors.blue), const SizedBox(width: 10), Expanded(child: Text(_selectedType == "Medical Leave" ? "Please upload a valid Medical Certificate (PDF/JPG)." : _selectedType == "College Event" ? "Upload Permission Letter or Participation Cert." : "Describe your issue clearly for review.", style: const TextStyle(fontSize: 12, color: Colors.blue)))])),
-            const SizedBox(height: 20),
-            TextField(controller: _reasonController, decoration: InputDecoration(labelText: _selectedType == "College Event" ? "Event Name & Organizer" : "Reason / Description", border: const OutlineInputBorder(), prefixIcon: const Icon(Icons.description)), maxLines: 2),
-            const SizedBox(height: 15),
-            GestureDetector(onTap: _pickDateRange, child: AbsorbPointer(child: TextField(decoration: InputDecoration(labelText: _selectedDateRange == null ? "Select Dates of Absence" : "${DateFormat('MMM dd').format(_selectedDateRange!.start)} - ${DateFormat('MMM dd').format(_selectedDateRange!.end)}", border: const OutlineInputBorder(), prefixIcon: const Icon(Icons.date_range))))),
-            const SizedBox(height: 15),
-            TextField(controller: _subjectsController, decoration: const InputDecoration(labelText: "Affected Subjects", border: OutlineInputBorder(), prefixIcon: Icon(Icons.book))),
-            const SizedBox(height: 20),
-            if (_selectedType != "General Inquiry") ...[
-              const Text("Proof Document (Max 5MB)", style: TextStyle(fontWeight: FontWeight.bold)), const SizedBox(height: 10),
-              GestureDetector(onTap: _pickFile, child: Container(height: 100, width: double.infinity, decoration: BoxDecoration(border: Border.all(color: Colors.grey, style: BorderStyle.solid), borderRadius: BorderRadius.circular(10), color: isDark ? Colors.grey[800] : Colors.grey.shade100), child: _selectedFile == null ? const Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.cloud_upload, size: 30, color: Colors.grey), Text("Tap to upload PDF, JPG, PNG", style: TextStyle(color: Colors.grey))]) : Column(mainAxisAlignment: MainAxisAlignment.center, children: [const Icon(Icons.check_circle, size: 30, color: Colors.green), Text(_fileName ?? "File Selected", style: const TextStyle(fontWeight: FontWeight.bold)), const Text("Tap to change", style: TextStyle(fontSize: 10, color: Colors.grey))]))),
-            ],
-            const SizedBox(height: 30),
-            SizedBox(width: double.infinity, height: 50, child: ElevatedButton(onPressed: _isUploading ? null : _submitRequest, style: ElevatedButton.styleFrom(backgroundColor: Colors.purple, foregroundColor: Colors.white), child: _isUploading ? const CircularProgressIndicator(color: Colors.white) : const Text("SUBMIT REQUEST", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)))),
-        ]),
-      ),
-    );
-  }
-}
+// Note: RequestCorrectionPage is now imported from request_correction_page.dart

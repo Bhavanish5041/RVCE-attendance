@@ -89,11 +89,13 @@ class _TeacherScreenState extends State<TeacherScreen> {
       } else {
         setState(() => _isLoadingProfile = false);
         if (mounted) {
-           Future.delayed(const Duration(milliseconds: 500), () => _showSetupDialog(context));
+           Future.delayed(const Duration(milliseconds: 500), () {
+             if (mounted) _showSetupDialog(context);
+           });
         }
       }
     } catch (e) {
-      print("Error loading profile: $e");
+      debugPrint("Error loading profile: $e");
       setState(() => _isLoadingProfile = false);
     }
   }
@@ -194,7 +196,7 @@ class _TeacherScreenState extends State<TeacherScreen> {
                 onPressed: () async {
                   if (nameCtrl.text.isNotEmpty && subCtrl.text.isNotEmpty) {
                     await _saveProfileToDB(nameCtrl.text, subCtrl.text, tempSection, tempYear);
-                    Navigator.pop(ctx);
+                    if (ctx.mounted) Navigator.pop(ctx);
                   }
                 },
                 child: const Text("SAVE & CONTINUE"),
@@ -402,7 +404,7 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
       if (widget.currentSection.endsWith("C")) sectionNum = 3;
       int beaconCode = (widget.currentYear * 10) + sectionNum;
 
-      print("📡 Broadcasting Code $beaconCode for ${widget.currentSubject}");
+      debugPrint("📡 Broadcasting Code $beaconCode for ${widget.currentSubject}");
 
       // --- BLE CODE HERE (Uncomment for Real Device) ---
       
@@ -656,7 +658,7 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
                      Row(children: [
                        Expanded(child: DropdownButtonFormField<String>(
                          decoration: const InputDecoration(labelText: "Department", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
-                         value: _selectedDept,
+                         initialValue: _selectedDept,
                          items: _departments.map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 12)))).toList(),
                          onChanged: (val) {
                            setState(() { _selectedDept = val; _selectedSection = null; });
@@ -666,7 +668,7 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
                        const SizedBox(width: 10),
                        Expanded(child: DropdownButtonFormField<int>(
                          decoration: const InputDecoration(labelText: "Semester", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
-                         value: _selectedSem,
+                         initialValue: _selectedSem,
                          items: _semesters.map((e) => DropdownMenuItem(value: e, child: Text("Sem $e", style: const TextStyle(fontSize: 12)))).toList(),
                          onChanged: (val) {
                            setState(() { _selectedSem = val; _selectedSection = null; });
@@ -679,14 +681,14 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
                      Row(children: [
                        Expanded(child: DropdownButtonFormField<String>(
                          decoration: const InputDecoration(labelText: "Section", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
-                         value: _selectedSection,
+                         initialValue: _selectedSection,
                          items: _sections.map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 12)))).toList(),
                          onChanged: (val) => setState(() => _selectedSection = val),
                        )),
                        const SizedBox(width: 10),
                        Expanded(flex: 2, child: DropdownButtonFormField<String>(
                          decoration: const InputDecoration(labelText: "Subject", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
-                         value: _selectedSubjectCode,
+                         initialValue: _selectedSubjectCode,
                          isExpanded: true,
                          items: _allSubjects.map((e) => DropdownMenuItem(value: e['course_code'].toString(), child: Text(e['name'], overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)))).toList(),
                          onChanged: (val) {
@@ -792,7 +794,7 @@ class _TeacherTimetableViewState extends State<TeacherTimetableView> with Single
   void _showAddClassDialog() {
     final subjectCtrl = TextEditingController();
     final roomCtrl = TextEditingController();
-    String section = "Section-A";
+    String section = "A";
     int day = 1;
     int hour = 9;
 
@@ -807,9 +809,9 @@ class _TeacherTimetableViewState extends State<TeacherTimetableView> with Single
               TextField(controller: subjectCtrl, decoration: const InputDecoration(labelText: "Subject Name")),
               TextField(controller: roomCtrl, decoration: const InputDecoration(labelText: "Room (e.g. CR-402)")),
               const SizedBox(height: 10),
-              DropdownButtonFormField(initialValue: day, items: List.generate(6, (i) => DropdownMenuItem(value: i+1, child: Text(_days[i]))), onChanged: (v) => day = v!, decoration: const InputDecoration(labelText: "Day")),
-              DropdownButtonFormField(initialValue: hour, items: List.generate(9, (i) => DropdownMenuItem(value: i+9, child: Text("${i+9}:00"))), onChanged: (v) => hour = v!, decoration: const InputDecoration(labelText: "Time")),
-               DropdownButtonFormField(initialValue: section, items: ['Section-A', 'Section-B', 'Section-C'].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(), onChanged: (v) => section = v!, decoration: const InputDecoration(labelText: "Section")),
+              DropdownButtonFormField<int>(initialValue: day, items: List.generate(6, (i) => DropdownMenuItem(value: i+1, child: Text(_days[i]))), onChanged: (v) => day = v!, decoration: const InputDecoration(labelText: "Day")),
+              DropdownButtonFormField<int>(initialValue: hour, items: List.generate(9, (i) => DropdownMenuItem(value: i+9, child: Text("${i+9}:00"))), onChanged: (v) => hour = v!, decoration: const InputDecoration(labelText: "Time")),
+              DropdownButtonFormField<String>(initialValue: section, items: ['A', 'B', 'C'].map((e) => DropdownMenuItem(value: e, child: Text("Section $e"))).toList(), onChanged: (v) => section = v!, decoration: const InputDecoration(labelText: "Section")),
             ],
           ),
         ),
@@ -817,16 +819,28 @@ class _TeacherTimetableViewState extends State<TeacherTimetableView> with Single
           TextButton(
             onPressed: () async {
               if (subjectCtrl.text.isNotEmpty) {
-                await Supabase.instance.client.from('timetable').insert({
-                  'professor': widget.profName,
-                  'subject': subjectCtrl.text,
-                  'room_number': roomCtrl.text,
-                  'day_of_week': day,
-                  'start_hour': hour,
-                  'section': section,
-                });
-                Navigator.pop(ctx);
-                setState(() {}); // Refresh
+                try {
+                  await Supabase.instance.client.from('timetable').insert({
+                    'teacher_id': Supabase.instance.client.auth.currentUser!.id,
+                    'subject_code': subjectCtrl.text,
+                    'room_number': roomCtrl.text,
+                    'day_of_week': day,
+                    'start_time': "${hour.toString().padLeft(2, '0')}:00:00",
+                    'end_time': "${(hour+1).toString().padLeft(2, '0')}:00:00",
+                    'section': "Section-$section",
+                  }).select();
+                  
+                  if (context.mounted) {
+                    Navigator.pop(ctx);
+                    setState(() {}); // Refresh
+                  }
+                } catch (e) {
+                  if (ctx.mounted) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      SnackBar(content: Text("Error adding class: $e"), backgroundColor: Colors.red),
+                    );
+                  }
+                }
               }
             },
             child: const Text("ADD"),
@@ -854,7 +868,7 @@ class _TeacherTimetableViewState extends State<TeacherTimetableView> with Single
         controller: _tabController,
         children: List.generate(6, (dayIndex) {
           return FutureBuilder(
-            future: Supabase.instance.client.from('timetable').select().eq('professor', widget.profName).eq('day_of_week', dayIndex + 1).order('start_hour', ascending: true),
+            future: Supabase.instance.client.from('timetable').select().eq('teacher_id', Supabase.instance.client.auth.currentUser!.id).eq('day_of_week', dayIndex + 1).order('start_time', ascending: true),
             builder: (context, snapshot) {
               if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
               final classes = snapshot.data as List<dynamic>;
@@ -872,9 +886,9 @@ class _TeacherTimetableViewState extends State<TeacherTimetableView> with Single
                       leading: Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(color: Colors.purple.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                        child: Text("${cls['start_hour']}:00", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple)),
+                        child: Text(cls['start_time'].toString().substring(0, 5), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple)),
                       ),
-                      title: Text(cls['subject'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                      title: Text(cls['subject_code'] ?? 'Unknown', style: const TextStyle(fontWeight: FontWeight.bold)),
                       subtitle: Text("${cls['section']} • Room: ${cls['room_number'] ?? 'TBD'}"),
                       trailing: IconButton(
                          icon: const Icon(Icons.delete, color: Colors.red),

@@ -111,87 +111,151 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
+      backgroundColor: Colors.white,
+      body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.school, size: 80, color: Colors.purple),
-              const SizedBox(height: 24),
-              const Text(
-                'Attendance App',
+              const SizedBox(height: 40),
+              // Header
+              Text(
+                'Welcome Back!\nSign in to continue!',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black,
+                      height: 1.3,
+                    ),
               ),
-              const SizedBox(height: 48),
-              TextField(
+              const SizedBox(height: 40),
+
+
+
+              // Email Input
+              const Text(
+                'Username / Email',
+                textAlign: TextAlign.start,
+                style: TextStyle(
+                  color: Color(0xFF939393),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w300,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
                 controller: _emailController,
                 decoration: const InputDecoration(
-                  labelText: 'Email',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.email),
+                  hintText: 'Enter your email',
+                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 0),
                 ),
                 keyboardType: TextInputType.emailAddress,
               ),
-              const SizedBox(height: 16),
-              TextField(
+
+              const SizedBox(height: 24),
+
+              // Password Input
+              const Text(
+                'Password',
+                textAlign: TextAlign.start,
+                style: TextStyle(
+                  color: Color(0xFF939393),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w300,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
                 controller: _passwordController,
                 decoration: const InputDecoration(
-                  labelText: 'Password',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.lock),
+                  hintText: 'Enter your password',
+                   contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 0),
                 ),
                 obscureText: true,
               ),
-              const SizedBox(height: 24),
-              FilledButton(
+
+              const SizedBox(height: 40),
+
+              // Login Button
+              ElevatedButton(
                 onPressed: _isLoading ? null : _handleLogin,
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 52),
+                  backgroundColor: const Color(0xFF8B2072),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                 ),
                 child: _isLoading
                     ? const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        height: 24,
+                        width: 24,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                       )
-                    : const Text('Login'),
+                    : const Text(
+                        'Log in',
+                        style: TextStyle(fontSize: 21, fontWeight: FontWeight.w500),
+                      ),
               ),
-              const SizedBox(height: 10),
-              OutlinedButton(
-                onPressed: _isLoading ? null : _handleSignup,
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
+
+              const SizedBox(height: 24),
+
+              // Footer Links
+              TextButton(
+                onPressed: () {
+                   // TODO: Implement Forgot Password
+                },
+                child: const Text(
+                  'Forget password?',
+                  style: TextStyle(
+                    color: Color(0xFF8B2072),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-                child: const Text('Sign Up (Test Only)'),
               ),
-              const SizedBox(height: 20),
-              const Row(children: [Expanded(child: Divider()), Padding(padding: EdgeInsets.all(8.0), child: Text("OR TEST OFFLINE")), Expanded(child: Divider())]),
-              const SizedBox(height: 10),
+              
               Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                   Expanded(
-                     child: TextButton.icon(
-                       icon: const Icon(Icons.person_outline),
-                       label: const Text("Guest Student"),
-                       onPressed: () => Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const StudentScreen(studentEmail: "guest@student.com"))),
-                     ),
-                   ),
-                   Expanded(
-                     child: TextButton.icon(
-                       icon: const Icon(Icons.school_outlined),
-                       label: const Text("Guest Teacher"),
-                       onPressed: () => Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const TeacherScreen())),
-                     ),
-                   ),
+                  const Text(
+                    "Don't have an account? ",
+                    style: TextStyle(
+                        color: Color(0xFF8B2072),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500),
+                  ),
+                  GestureDetector(
+                    onTap: _handleSignup,
+                     child: const Text(
+                      "Sign up",
+                      style: TextStyle(
+                          color: Color(0xFFFF0000), // Red from Figma
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500),
+                    ),
+                  ),
                 ],
-              )
+              ),
+              
+              const SizedBox(height: 30),
+
+              // Guest Access (Testing)
+              TextButton(
+                onPressed: () => Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const StudentScreen(studentEmail: "guest@student.com"))),
+                 child: const Text("Guest Student Access (Test)", style: TextStyle(color: Colors.grey)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const TeacherScreen())), // Quick Teacher Access
+                 child: const Text("Guest Teacher Access (Test)", style: TextStyle(color: Colors.grey)),
+              ),
             ],
           ),
         ),
       ),
     );
   }
+
+
 }
