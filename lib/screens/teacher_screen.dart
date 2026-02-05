@@ -505,7 +505,7 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
     try {
       final logs = await Supabase.instance.client
           .from('attendance_logs')
-          .select('student_id, status, created_at')
+          .select('student_id, status, check_in_time')
           .eq('subject', widget.currentSubject)
           .eq('section', widget.currentSection);
 
