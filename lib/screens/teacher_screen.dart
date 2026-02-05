@@ -654,8 +654,10 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Stop current class first!")));
       return;
     }
-    widget.onClassStateChanged(false, cls['subject'], cls['section'], cls['year'] ?? 1);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Loaded: ${cls['subject']}")));
+    // Use subject_code from DB, fallback to subject if legacy
+    final subjectCode = cls['subject_code'] ?? cls['subject'] ?? '';
+    widget.onClassStateChanged(false, subjectCode, cls['section'], cls['year'] ?? 1);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Loaded: $subjectCode")));
   }
 
   void _startListeningToDatabase() {
@@ -836,8 +838,8 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
                         decoration: BoxDecoration(
                           color: cardColor,
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.grey.withValues(alpha: 0.1)),
-                          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 5)],
+                          border: Border.all(color: Colors.grey.withOpacity(0.1)),
+                          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -847,7 +849,7 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
                                Text("${cls['start_hour']}:00", style: TextStyle(color: Colors.blue.shade400, fontWeight: FontWeight.bold)),
                                Text(cls['room_number'] ?? "CR-402", style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
                              ]),
-                             Text(cls['subject'], maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                             Text(cls['subject_code'] ?? 'Unknown', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                              Text("${cls['section']} (${cls['enrolled'] ?? 64} Students)", style: const TextStyle(color: Colors.grey, fontSize: 12)),
                           ],
                         ),
