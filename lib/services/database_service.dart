@@ -57,19 +57,24 @@ class DatabaseService {
   /// 🧠 INTELLIGENCE: Calls the SQL function we wrote to calculate 75% math
   Future<List<Map<String, dynamic>>> getAttendanceSummary() async {
     final user = _client.auth.currentUser;
-    if (user == null) return [];
+    if (user == null) {
+      debugPrint("⚠️ getAttendanceSummary: No user logged in!");
+      return [];
+    }
 
     try {
+      debugPrint("🔍 getAttendanceSummary: Fetching for user.id = ${user.id}");
       final response = await _client.rpc(
         'get_student_attendance_summary', 
         params: {'student_uuid': user.id}
       );
       
+      debugPrint("📊 getAttendanceSummary: Got ${response?.length ?? 0} subjects");
       if (response == null) return [];
       
       return List<Map<String, dynamic>>.from(response);
     } catch (e) {
-      debugPrint("Error fetching attendance summary: $e");
+      debugPrint("❌ Error fetching attendance summary: $e");
       return [];
     }
   }
@@ -737,22 +742,18 @@ class DatabaseService {
       // 1. Get Subjects Summary (Uses existing RPC/Logic)
       final subjects = await getAttendanceSummary();
 
-      // 2. Get Recent Logs
+      // 2. Get Recent Logs (using student_id, no join needed - subject is in logs directly)
       final logsData = await _client
           .from('attendance_logs')
-          .select('*, attendance_sessions(subject_code)')
-          .eq('student_email', email)
+          .select('*')
+          .eq('student_id', user.id)
           .order('check_in_time', ascending: false)
           .limit(10);
       
       final recentLogs = List<Map<String, dynamic>>.from(logsData.map((log) {
-        // Flatten structure for UI convenience if needed, 
-        // or let UI handle "attendance_sessions"['subject_code']
-        // The UI currently expects 'class_name' in recent activity.
-        final session = log['attendance_sessions'] as Map<String, dynamic>?;
         return {
           ...log,
-          'class_name': session != null ? session['subject_code'] : (log['subject'] ?? 'Unknown'),
+          'class_name': log['subject'] ?? 'Unknown',
         };
       }));
 
@@ -809,17 +810,50 @@ class DatabaseService {
     }
   }
 
-  /// Fetch subject history and attendance records
+  /// Get current student's data (section, semester, etc)
+  Future<Map<String, dynamic>?> getStudentData() async {
+    try {
+      final user = _client.auth.currentUser;
+      if (user == null) return null;
+      
+      final data = await _client
+          .from('students')
+          .select()
+          .eq('user_id', user.id)
+          .maybeSingle();
+      return data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Get timetable entries for a specific section and semester
+  Future<List<Map<String, dynamic>>> getTimetableForSection(String section, int semester) async {
+    try {
+      final data = await _client
+          .from('timetable')
+          .select('subject_code, professor, teacher_id')
+          .eq('section', section)
+          .eq('semester', semester);
+      return List<Map<String, dynamic>>.from(data);
+    } catch (e) {
+      return [];
+    }
+  }
+
   Future<List<Map<String, dynamic>>> fetchSubjectHistory(
     String email,
     String subject,
   ) async {
     try {
-      return await _client
-          .from('attendance_logs')
-          .select('*, attendance_sessions(subject_code)')
-          .eq('student_email', email)
-          .order('check_in_time', ascending: false);
+    final user = _client.auth.currentUser;
+    if (user == null) return [];
+    
+    return await _client
+        .from('attendance_logs')
+        .select('*')
+        .eq('student_id', user.id)
+        .order('check_in_time', ascending: false);
     } catch (e) {
       return [];
     }

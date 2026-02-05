@@ -22,7 +22,8 @@ class _TeacherScreenState extends State<TeacherScreen> {
   // 🟢 SHARED STATE
   String _profName = "";
   String _subject = "";
-  String _section = "Section-A";
+  String _department = "AIML";
+  String _section = "A";
   int _year = 1;
   bool _isAdvertising = false;
   
@@ -72,26 +73,56 @@ class _TeacherScreenState extends State<TeacherScreen> {
   // 💾 2. FETCH PROFILE
   Future<void> _loadProfileFromDB() async {
     try {
-      final data = await Supabase.instance.client
-          .from('teacher_profiles')
+      // First try teachers table
+      final teacherData = await Supabase.instance.client
+          .from('teachers')
           .select()
-          .eq('email', _currentUser!.email!)
+          .eq('user_id', _currentUser!.id)
           .maybeSingle();
 
-      if (data != null) {
+      if (teacherData != null) {
+        // Get teacher's assigned section/semester from timetable with subject name
+        final timetableData = await Supabase.instance.client
+            .from('timetable')
+            .select('section, semester, subject_code, subjects(name, department)')
+            .eq('teacher_id', _currentUser!.id)
+            .limit(1)
+            .maybeSingle();
+        
+        int semester = timetableData?['semester'] ?? 5;
+        int year = ((semester - 1) ~/ 2) + 1; // Sem 5,6 = Year 3
+        
+        // Get subject details
+        final subjectInfo = timetableData?['subjects'] as Map<String, dynamic>?;
+        
         setState(() {
-          _profName = data['name'];
-          _subject = data['default_subject'] ?? "";
-          _section = data['default_section'] ?? "Section-A";
-          _year = data['default_year'] ?? 1;
+          _profName = teacherData['name'] ?? 'Teacher';
+          _subject = subjectInfo?['name'] ?? timetableData?['subject_code'] ?? '';
+          _department = subjectInfo?['department'] ?? 'AIML';
+          _section = timetableData?['section'] ?? 'A';
+          _year = year;
           _isLoadingProfile = false;
         });
       } else {
-        setState(() => _isLoadingProfile = false);
-        if (mounted) {
-           Future.delayed(const Duration(milliseconds: 500), () {
-             if (mounted) _showSetupDialog(context);
-           });
+        // Fallback to profiles table
+        final profileData = await Supabase.instance.client
+            .from('profiles')
+            .select()
+            .eq('id', _currentUser!.id)
+            .maybeSingle();
+        
+        if (profileData != null) {
+          setState(() {
+            _profName = profileData['full_name'] ?? 'Teacher';
+            _isLoadingProfile = false;
+          });
+        } else {
+          setState(() => _isLoadingProfile = false);
+          if (mounted) {
+            Future.delayed(const Duration(milliseconds: 500), () {
+              if (mounted) _showSetupDialog(context);
+            });
+          }
         }
       }
     } catch (e) {
@@ -239,12 +270,15 @@ class _TeacherScreenState extends State<TeacherScreen> {
             TeacherHomeView(
               profName: _profName,
               currentSubject: _subject,
+              currentDepartment: _department,
               currentSection: _section,
               currentYear: _year,
               isAdvertising: _isAdvertising,
               onClassStateChanged: _updateClassState,
             ),
             TeacherTimetableView(profName: _profName),
+            const TeacherTopicsView(),
+            const TeacherRequestsView(), // NEW: Requests tab
             TeacherSettingsView(
               isDarkMode: _isDarkMode!, 
               onThemeChanged: _toggleTheme,
@@ -262,6 +296,8 @@ class _TeacherScreenState extends State<TeacherScreen> {
           destinations: const [
             NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Home'),
             NavigationDestination(icon: Icon(Icons.calendar_month_outlined), selectedIcon: Icon(Icons.calendar_month), label: 'Timetable'),
+            NavigationDestination(icon: Icon(Icons.add_box_outlined), selectedIcon: Icon(Icons.add_box), label: 'Topics'),
+            NavigationDestination(icon: Icon(Icons.inbox_outlined), selectedIcon: Icon(Icons.inbox), label: 'Requests'),
             NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
           ],
         ),
@@ -276,6 +312,7 @@ class _TeacherScreenState extends State<TeacherScreen> {
 class TeacherHomeView extends StatefulWidget {
   final String profName;
   final String currentSubject;
+  final String currentDepartment;
   final String currentSection;
   final int currentYear;
   final bool isAdvertising;
@@ -285,6 +322,7 @@ class TeacherHomeView extends StatefulWidget {
     super.key,
     required this.profName,
     required this.currentSubject,
+    required this.currentDepartment,
     required this.currentSection,
     required this.currentYear,
     required this.isAdvertising,
@@ -558,12 +596,6 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
         backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         elevation: 0,
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showResourceSheet,
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        icon: const Icon(Icons.add_task, color: Colors.white),
-        label: const Text("Add Topic", style: TextStyle(color: Colors.white)),
-      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
@@ -591,7 +623,7 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
                       children: [
                         const Icon(Icons.class_, color: Colors.white, size: 16),
                         const SizedBox(width: 8),
-                        Text("${widget.currentSubject} • Year ${widget.currentYear} • ${widget.currentSection}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        Text("Y${widget.currentYear} • ${widget.currentDepartment} • Sec ${widget.currentSection}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
                       ],
                     ),
                   ),
@@ -644,81 +676,6 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
               const SizedBox(height: 30),
             ],
 
-            // 🛠️ MANUAL CLASS START
-            if (!widget.isAdvertising) ...[ // Only show if class not running
-               Container(
-                 padding: const EdgeInsets.all(16),
-                 decoration: BoxDecoration(color: cardColor, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.withValues(alpha: 0.2))),
-                 child: Column(
-                   crossAxisAlignment: CrossAxisAlignment.start,
-                   children: [
-                     const Text("Manual Class Start", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                     const SizedBox(height: 15),
-                     // Row 1: Dept & Sem
-                     Row(children: [
-                       Expanded(child: DropdownButtonFormField<String>(
-                         decoration: const InputDecoration(labelText: "Department", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
-                         initialValue: _selectedDept,
-                         items: _departments.map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 12)))).toList(),
-                         onChanged: (val) {
-                           setState(() { _selectedDept = val; _selectedSection = null; });
-                           _fetchSections();
-                         },
-                       )),
-                       const SizedBox(width: 10),
-                       Expanded(child: DropdownButtonFormField<int>(
-                         decoration: const InputDecoration(labelText: "Semester", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
-                         initialValue: _selectedSem,
-                         items: _semesters.map((e) => DropdownMenuItem(value: e, child: Text("Sem $e", style: const TextStyle(fontSize: 12)))).toList(),
-                         onChanged: (val) {
-                           setState(() { _selectedSem = val; _selectedSection = null; });
-                           _fetchSections();
-                         },
-                       )),
-                     ]),
-                     const SizedBox(height: 10),
-                     // Row 2: Section & Subject
-                     Row(children: [
-                       Expanded(child: DropdownButtonFormField<String>(
-                         decoration: const InputDecoration(labelText: "Section", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
-                         initialValue: _selectedSection,
-                         items: _sections.map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 12)))).toList(),
-                         onChanged: (val) => setState(() => _selectedSection = val),
-                       )),
-                       const SizedBox(width: 10),
-                       Expanded(flex: 2, child: DropdownButtonFormField<String>(
-                         decoration: const InputDecoration(labelText: "Subject", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 0)),
-                         initialValue: _selectedSubjectCode,
-                         isExpanded: true,
-                         items: _allSubjects.map((e) => DropdownMenuItem(value: e['course_code'].toString(), child: Text(e['name'], overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)))).toList(),
-                         onChanged: (val) {
-                            final sub = _allSubjects.firstWhere((e) => e['course_code'] == val, orElse: () => {});
-                            setState(() { _selectedSubjectCode = val; _selectedSubjectName = sub['name']; });
-                         },
-                       )),
-                     ]),
-                     const SizedBox(height: 15),
-                     SizedBox(
-                       width: double.infinity,
-                       child: ElevatedButton.icon(
-                         onPressed: (_selectedDept != null && _selectedSem != null && _selectedSection != null && _selectedSubjectCode != null)
-                             ? () {
-                                 // Update State for Class Start
-                                 widget.onClassStateChanged(false, _selectedSubjectName ?? "Unknown", _selectedSection!, _selectedSem!.toInt() ~/ 2 + 1); // Approx year 
-                                 // Trigger start (reuse existing logic)
-                                 _toggleAttendance(); 
-                               }
-                             : null,
-                         style: ElevatedButton.styleFrom(backgroundColor: Colors.purple, foregroundColor: Colors.white),
-                         icon: const Icon(Icons.play_arrow),
-                         label: const Text("START CLASS NOW"),
-                       ),
-                     )
-                   ],
-                 ),
-               ),
-               const SizedBox(height: 30),
-            ],
 
             // 🔴 START BUTTON
             Center(
@@ -910,7 +867,622 @@ class _TeacherTimetableViewState extends State<TeacherTimetableView> with Single
 }
 
 // ============================================================================
-// ⚙️ TAB 3: SETTINGS VIEW
+// 📝 TAB 3: TOPICS VIEW
+// ============================================================================
+class TeacherTopicsView extends StatefulWidget {
+  const TeacherTopicsView({super.key});
+
+  @override
+  State<TeacherTopicsView> createState() => _TeacherTopicsViewState();
+}
+
+class _TeacherTopicsViewState extends State<TeacherTopicsView> {
+  final TextEditingController _topicNameCtrl = TextEditingController();
+  final TextEditingController _topicSummaryCtrl = TextEditingController();
+  final TextEditingController _youtubeLinkCtrl = TextEditingController();
+  final List<Map<String, dynamic>> _attachedFiles = [];
+  
+  List<Map<String, dynamic>> _subjects = [];
+  String? _selectedSubject;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSubjects();
+  }
+
+  Future<void> _loadSubjects() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) {
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    try {
+      final data = await Supabase.instance.client
+          .from('timetable')
+          .select('subject_code')
+          .eq('teacher_id', user.id);
+      
+      final Map<String, bool> unique = {};
+      for (var item in data) {
+        unique[item['subject_code']] = true;
+      }
+      
+      setState(() {
+        _subjects = unique.keys.map((e) => {'subject_code': e}).toList();
+        if (_subjects.isNotEmpty) {
+          _selectedSubject = _subjects.first['subject_code'];
+        }
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _pickFile() async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      type: FileType.custom, 
+      allowedExtensions: ['pdf', 'ppt', 'pptx'],
+      withData: true, // Important for mobile
+    );
+    if (result != null && result.files.first.bytes != null) {
+      final file = result.files.first;
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+      
+      try {
+        // Upload to Supabase Storage
+        await Supabase.instance.client.storage
+            .from('academic_files')
+            .uploadBinary(fileName, file.bytes!);
+        
+        final url = Supabase.instance.client.storage
+            .from('academic_files')
+            .getPublicUrl(fileName);
+        
+        setState(() => _attachedFiles.add({
+          'type': 'file', 
+          'name': file.name,
+          'url': url,
+        }));
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Uploaded: ${file.name}"), backgroundColor: Colors.green),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Upload failed: $e"), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  void _addYoutubeLink() {
+    if (_youtubeLinkCtrl.text.isNotEmpty) {
+      setState(() => _attachedFiles.add({
+        'type': 'youtube', 
+        'name': 'Video Link', 
+        'url': _youtubeLinkCtrl.text
+      }));
+      _youtubeLinkCtrl.clear();
+    }
+  }
+
+  Future<void> _postTopic() async {
+    if (_topicNameCtrl.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please enter topic name"), backgroundColor: Colors.orange)
+      );
+      return;
+    }
+    
+    if (_selectedSubject == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please select a subject"), backgroundColor: Colors.orange)
+      );
+      return;
+    }
+    
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      
+      // Get URL from attachments (file or youtube)
+      String? resourceUrl;
+      if (_attachedFiles.isNotEmpty) {
+        final fileAttachment = _attachedFiles.where((f) => f['type'] == 'file' && f['url'] != null).firstOrNull;
+        final youtubeAttachment = _attachedFiles.where((f) => f['type'] == 'youtube').firstOrNull;
+        resourceUrl = fileAttachment?['url'] ?? youtubeAttachment?['url'];
+      }
+      
+      // Save to class_resources table
+      // resource_type must be: 'pdf', 'ppt', 'video', or 'link'
+      String resourceType = 'pdf';
+      if (_attachedFiles.isNotEmpty) {
+        final firstFile = _attachedFiles.first;
+        if (firstFile['type'] == 'youtube') {
+          resourceType = 'video';
+        } else if (firstFile['name']?.toString().endsWith('.ppt') == true || 
+                   firstFile['name']?.toString().endsWith('.pptx') == true) {
+          resourceType = 'ppt';
+        }
+      }
+      
+      await Supabase.instance.client.from('class_resources').insert({
+        'subject_code': _selectedSubject,
+        'title': _topicNameCtrl.text,
+        'file_url': resourceUrl,
+        'resource_type': resourceType,
+        'teacher_id': user?.id,
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Topic '${_topicNameCtrl.text}' posted to $_selectedSubject!"), 
+          backgroundColor: Colors.green
+        )
+      );
+      
+      // Clear form
+      _topicNameCtrl.clear();
+      _topicSummaryCtrl.clear();
+      _attachedFiles.clear();
+      setState(() {});
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error posting topic: $e"), backgroundColor: Colors.red)
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardColor = Theme.of(context).cardColor;
+    
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Add Topic"),
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        elevation: 0,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Subject Selector
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Select Subject", style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 10),
+                  if (_isLoading)
+                    const Center(child: CircularProgressIndicator())
+                  else if (_subjects.isEmpty)
+                    const Text("No subjects assigned", style: TextStyle(color: Colors.grey))
+                  else
+                    DropdownButtonFormField<String>(
+                      value: _selectedSubject,
+                      decoration: const InputDecoration(border: OutlineInputBorder()),
+                      items: _subjects.map((s) => DropdownMenuItem(
+                        value: s['subject_code'] as String,
+                        child: Text(s['subject_code'] as String),
+                      )).toList(),
+                      onChanged: (val) => setState(() => _selectedSubject = val),
+                    ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+            
+            // Topic Details
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Topic Details", style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 15),
+                  TextField(
+                    controller: _topicNameCtrl,
+                    decoration: const InputDecoration(
+                      labelText: "Topic Name",
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.title),
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+                  TextField(
+                    controller: _topicSummaryCtrl,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: "Summary / Notes",
+                      border: OutlineInputBorder(),
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+            
+            // Attachments
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Attachments", style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 15),
+                  if (_attachedFiles.isNotEmpty)
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _attachedFiles.map((f) => Chip(
+                        avatar: Icon(f['type'] == 'youtube' ? Icons.play_circle : Icons.insert_drive_file, size: 18),
+                        label: Text(f['name'], style: const TextStyle(fontSize: 12)),
+                        onDeleted: () => setState(() => _attachedFiles.remove(f)),
+                      )).toList(),
+                    ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _pickFile,
+                          icon: const Icon(Icons.upload_file),
+                          label: const Text("Upload PDF"),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.purple.shade100,
+                            foregroundColor: Colors.purple,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _youtubeLinkCtrl,
+                          decoration: const InputDecoration(
+                            hintText: "YouTube Link",
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.link, color: Colors.red),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      IconButton(
+                        onPressed: _addYoutubeLink,
+                        icon: const Icon(Icons.add_circle, color: Colors.red, size: 32),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 30),
+            
+            // Post Button
+            SizedBox(
+              width: double.infinity,
+              height: 55,
+              child: ElevatedButton.icon(
+                onPressed: _postTopic,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.purple,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.send),
+                label: const Text("POST TO CLASS", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// 📬 TAB 4: REQUESTS VIEW
+// ============================================================================
+class TeacherRequestsView extends StatefulWidget {
+  const TeacherRequestsView({super.key});
+
+  @override
+  State<TeacherRequestsView> createState() => _TeacherRequestsViewState();
+}
+
+class _TeacherRequestsViewState extends State<TeacherRequestsView> {
+  List<Map<String, dynamic>> _requests = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRequests();
+  }
+
+  Future<void> _loadRequests() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) {
+        setState(() => _isLoading = false);
+        return;
+      }
+      
+      // 1. Get this teacher's assigned subjects
+      final teacherSubjects = await Supabase.instance.client
+          .from('timetable')
+          .select('subject_code')
+          .eq('teacher_id', user.id);
+      
+      final subjectCodes = teacherSubjects
+          .map((s) => s['subject_code'] as String)
+          .toSet()
+          .toList();
+      
+      debugPrint("Teacher subjects: $subjectCodes");
+      
+      if (subjectCodes.isEmpty) {
+        setState(() {
+          _requests = [];
+          _isLoading = false;
+        });
+        return;
+      }
+      
+      // 2. Fetch requests only for teacher's subjects
+      final data = await Supabase.instance.client
+          .from('attendance_correction_requests')
+          .select()
+          .eq('status', 'Pending')
+          .inFilter('subject_code', subjectCodes);
+      
+      // 3. Fetch student info for each request
+      final List<Map<String, dynamic>> enrichedRequests = [];
+      for (var req in data) {
+        final studentId = req['student_id'];
+        if (studentId != null) {
+          try {
+            final student = await Supabase.instance.client
+                .from('students')
+                .select('name, email')
+                .eq('user_id', studentId)
+                .maybeSingle();
+            
+            enrichedRequests.add({
+              ...req,
+              'student_name': student?['name'] ?? 'Unknown',
+              'student_email': student?['email'] ?? '',
+            });
+          } catch (e) {
+            enrichedRequests.add({...req, 'student_name': 'Unknown', 'student_email': ''});
+          }
+        } else {
+          enrichedRequests.add({...req, 'student_name': 'Unknown', 'student_email': ''});
+        }
+      }
+      
+      debugPrint("Loaded ${enrichedRequests.length} pending requests for this teacher");
+      
+      setState(() {
+        _requests = enrichedRequests;
+        _isLoading = false;
+      });
+    } catch (e) {
+      debugPrint("Error loading requests: $e");
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleRequest(String requestId, bool approve) async {
+    try {
+      if (approve) {
+        // 1. Get the request details first
+        final request = await Supabase.instance.client
+            .from('attendance_correction_requests')
+            .select()
+            .eq('id', requestId)
+            .single();
+        
+        // 2. Add attendance record for this student/subject
+        await Supabase.instance.client.from('attendance_logs').insert({
+          'student_id': request['student_id'],
+          'subject': request['subject_code'],
+          'status': 'Present',
+        });
+      }
+      
+      // 3. Update request status
+      await Supabase.instance.client
+          .from('attendance_correction_requests')
+          .update({
+            'status': approve ? 'Approved' : 'Rejected',
+            'reviewed_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', requestId);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(approve ? "Request Approved ✓ Attendance Added!" : "Request Rejected"),
+          backgroundColor: approve ? Colors.green : Colors.red,
+        ),
+      );
+      
+      _loadRequests(); // Refresh list
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardColor = Theme.of(context).cardColor;
+    
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Correction Requests"),
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              setState(() => _isLoading = true);
+              _loadRequests();
+            },
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _requests.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.inbox, size: 80, color: Colors.grey.shade300),
+                      const SizedBox(height: 16),
+                      const Text("No pending requests", style: TextStyle(color: Colors.grey, fontSize: 16)),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _requests.length,
+                  itemBuilder: (context, index) {
+                    final req = _requests[index];
+                    final studentName = req['student_name'] ?? req['student_id'] ?? 'Student';
+                    final studentEmail = req['student_email'] ?? '';
+                    
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: cardColor,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+                      ),
+                      child: Column(
+                        children: [
+                          ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: Colors.orange.shade100,
+                              child: const Icon(Icons.person, color: Colors.orange),
+                            ),
+                            title: Text(studentName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                            subtitle: Text(studentEmail, style: const TextStyle(fontSize: 12)),
+                            trailing: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text("Pending", style: TextStyle(color: Colors.orange, fontSize: 12)),
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Icon(Icons.book, size: 16, color: Colors.grey),
+                                    const SizedBox(width: 8),
+                                    Text("Subject: ${req['subject_code'] ?? 'N/A'}", style: const TextStyle(fontSize: 13)),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    const Icon(Icons.calendar_today, size: 16, color: Colors.grey),
+                                    const SizedBox(width: 8),
+                                    Text("Date: ${req['date_of_absence'] ?? 'N/A'}", style: const TextStyle(fontSize: 13)),
+                                  ],
+                                ),
+                                if (req['reason'] != null) ...[
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Icon(Icons.note, size: 16, color: Colors.grey),
+                                      const SizedBox(width: 8),
+                                      Expanded(child: Text("Reason: ${req['reason']}", style: const TextStyle(fontSize: 13))),
+                                    ],
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: () => _handleRequest(req['id'].toString(), false),
+                                    icon: const Icon(Icons.close, color: Colors.red),
+                                    label: const Text("Reject", style: TextStyle(color: Colors.red)),
+                                    style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.red)),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    onPressed: () => _handleRequest(req['id'].toString(), true),
+                                    icon: const Icon(Icons.check),
+                                    label: const Text("Approve"),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green,
+                                      foregroundColor: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+// ============================================================================
+// ⚙️ TAB 5: SETTINGS VIEW
 // ============================================================================
 class TeacherSettingsView extends StatefulWidget {
   final bool isDarkMode;
@@ -925,18 +1497,135 @@ class TeacherSettingsView extends StatefulWidget {
 }
 
 class _TeacherSettingsViewState extends State<TeacherSettingsView> {
+  List<Map<String, dynamic>> _assignedSubjects = [];
+  String? _selectedSubject;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAssignedSubjects();
+  }
+
+  Future<void> _loadAssignedSubjects() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) {
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    try {
+      // Get subjects this teacher is assigned to from timetable
+      final data = await Supabase.instance.client
+          .from('timetable')
+          .select('subject_code, section, semester')
+          .eq('teacher_id', user.id);
+      
+      // Remove duplicates by subject_code
+      final Map<String, Map<String, dynamic>> uniqueSubjects = {};
+      for (var item in data) {
+        final code = item['subject_code'] as String;
+        if (!uniqueSubjects.containsKey(code)) {
+          uniqueSubjects[code] = item;
+        }
+      }
+      
+      setState(() {
+        _assignedSubjects = uniqueSubjects.values.toList();
+        if (_assignedSubjects.isNotEmpty) {
+          _selectedSubject = _assignedSubjects.first['subject_code'];
+        }
+        _isLoading = false;
+      });
+    } catch (e) {
+      debugPrint("Error loading subjects: $e");
+      setState(() => _isLoading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final cardColor = Theme.of(context).cardColor;
+    
     return Scaffold(
       appBar: AppBar(title: const Text("Settings")),
       body: ListView(
+        padding: const EdgeInsets.all(16),
         children: [
+          // Profile Section
           ListTile(
             leading: const Icon(Icons.person, color: Colors.blue),
             title: const Text("Edit Profile"),
             subtitle: Text("Current: ${widget.profName}"),
             onTap: widget.onEditProfile,
           ),
+          const Divider(),
+          
+          // Subjects Section
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 8),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.book, color: Colors.purple),
+                    SizedBox(width: 8),
+                    Text("My Subjects", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (_isLoading)
+                  const Center(child: CircularProgressIndicator())
+                else if (_assignedSubjects.isEmpty)
+                  const Text("No subjects assigned yet", style: TextStyle(color: Colors.grey))
+                else
+                  Column(
+                    children: _assignedSubjects.map((subject) {
+                      final code = subject['subject_code'] as String;
+                      final section = subject['section'] ?? 'A';
+                      final semester = subject['semester'] ?? 5;
+                      final year = ((semester - 1) ~/ 2) + 1;
+                      
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: _selectedSubject == code 
+                              ? Colors.purple.withValues(alpha: 0.1) 
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: _selectedSubject == code 
+                                ? Colors.purple 
+                                : Colors.grey.withValues(alpha: 0.3),
+                          ),
+                        ),
+                        child: RadioListTile<String>(
+                          value: code,
+                          groupValue: _selectedSubject,
+                          activeColor: Colors.purple,
+                          title: Text(code, style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text("Year $year • Section $section"),
+                          onChanged: (value) {
+                            setState(() => _selectedSubject = value);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text("Selected: $code"), backgroundColor: Colors.purple),
+                            );
+                          },
+                        ),
+                      );
+                    }).toList(),
+                  ),
+              ],
+            ),
+          ),
+          
           const Divider(),
           SwitchListTile(
             title: const Text("Dark Mode"),

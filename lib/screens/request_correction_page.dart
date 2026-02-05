@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/database_service.dart';
 
 class RequestCorrectionPage extends StatefulWidget {
@@ -16,7 +17,11 @@ class _RequestCorrectionPageState extends State<RequestCorrectionPage> {
   // Form State
   String _selectedType = 'Medical Leave';
   final TextEditingController _reasonController = TextEditingController();
-  final TextEditingController _subjectsController = TextEditingController();
+  
+  // Subject Selection
+  List<Map<String, dynamic>> _subjects = [];
+  String? _selectedSubject;
+  bool _isLoadingSubjects = true;
   
   // Date Selection
   DateTimeRange? _selectedDateRange;
@@ -28,6 +33,43 @@ class _RequestCorrectionPageState extends State<RequestCorrectionPage> {
 
   // Options
   final List<String> _requestTypes = ['Medical Leave', 'College Event', 'General Inquiry'];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSubjects();
+  }
+
+  Future<void> _loadSubjects() async {
+    try {
+      // Fetch all unique subjects from timetable
+      final data = await Supabase.instance.client
+          .from('timetable')
+          .select('subject_code, professor');
+      
+      // Get unique subjects
+      final Map<String, Map<String, dynamic>> uniqueSubjects = {};
+      for (var item in data) {
+        final code = item['subject_code'] as String? ?? '';
+        if (code.isNotEmpty && !uniqueSubjects.containsKey(code)) {
+          uniqueSubjects[code] = item;
+        }
+      }
+      
+      debugPrint("Found ${uniqueSubjects.length} subjects");
+      
+      setState(() {
+        _subjects = uniqueSubjects.values.toList();
+        if (_subjects.isNotEmpty) {
+          _selectedSubject = _subjects.first['subject_code'];
+        }
+        _isLoadingSubjects = false;
+      });
+    } catch (e) {
+      debugPrint("Error loading subjects: $e");
+      setState(() => _isLoadingSubjects = false);
+    }
+  }
 
   // 1. PICK FILE (PDF/Images)
   Future<void> _pickFile() async {
@@ -73,7 +115,7 @@ class _RequestCorrectionPageState extends State<RequestCorrectionPage> {
 
   // 3. SUBMIT FORM
   Future<void> _submitRequest() async {
-    if (_selectedDateRange == null || _subjectsController.text.isEmpty) {
+    if (_selectedDateRange == null || _selectedSubject == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please fill all required fields!")));
       return;
     }
@@ -92,7 +134,7 @@ class _RequestCorrectionPageState extends State<RequestCorrectionPage> {
       await DatabaseService().submitCorrectionRequest(
         requestType: _selectedType,
         date: dateOfAbsence,
-        subjectCode: _subjectsController.text,
+        subjectCode: _selectedSubject!,
         reason: _reasonController.text.isEmpty ? "No description" : _reasonController.text,
         proofFile: _selectedFile,
       );
@@ -187,13 +229,40 @@ class _RequestCorrectionPageState extends State<RequestCorrectionPage> {
             ),
             const SizedBox(height: 15),
 
-            TextField(
-              controller: _subjectsController,
-              decoration: const InputDecoration(
-                labelText: "Affected Subjects (e.g., AI, Networks)",
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.book),
+            // Subject Dropdown
+            const Text("Select Subject", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 5),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey), 
+                borderRadius: BorderRadius.circular(8),
               ),
+              child: _isLoadingSubjects
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  : _subjects.isEmpty
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Text("No subjects found", style: TextStyle(color: Colors.grey)),
+                        )
+                      : DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: _selectedSubject,
+                            isExpanded: true,
+                            icon: const Icon(Icons.book, color: Colors.purple),
+                            items: _subjects.map((s) {
+                              final code = s['subject_code'] as String;
+                              return DropdownMenuItem(
+                                value: code,
+                                child: Text(code),
+                              );
+                            }).toList(),
+                            onChanged: (val) => setState(() => _selectedSubject = val),
+                          ),
+                        ),
             ),
             
             const SizedBox(height: 20),

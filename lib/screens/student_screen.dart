@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../main.dart'; 
 import 'attendance/scan_screen.dart';
 import '../services/database_service.dart';
@@ -12,7 +13,7 @@ import 'request_correction_page.dart';
 // ==========================================
 class StudentScreen extends StatefulWidget {
   final String studentEmail;
-  const StudentScreen({super.key, this.studentEmail = "student.ai23@rvce.edu.in"});
+  const StudentScreen({super.key, this.studentEmail = "student.ai24@rvce.edu.in"});
 
   @override
   State<StudentScreen> createState() => _StudentScreenState();
@@ -27,6 +28,7 @@ class _StudentScreenState extends State<StudentScreen> {
     const Center(child: CircularProgressIndicator()),
     const Center(child: CircularProgressIndicator()),
     const Center(child: CircularProgressIndicator()),
+    const Center(child: CircularProgressIndicator()),
   ];
 
   @override
@@ -37,17 +39,22 @@ class _StudentScreenState extends State<StudentScreen> {
   }
 
   Future<void> _initSequence() async {
+    // Get email from authenticated user if available, otherwise use passed email
+    final authUser = Supabase.instance.client.auth.currentUser;
+    final email = authUser?.email ?? widget.studentEmail;
+    
     // Try to register, but ignore errors for demo/offline logic
-    await DatabaseService().registerStudent(widget.studentEmail); 
+    await DatabaseService().registerStudent(email); 
     await _requestPermissions();
     
     if (mounted) {
       setState(() {
         _pages = [
-          DashboardPage(name: _displayName, email: widget.studentEmail),
-          MaterialsPage(email: widget.studentEmail),
-          TimetablePage(email: widget.studentEmail), 
-          SettingsPage(name: _displayName, email: widget.studentEmail), 
+          DashboardPage(name: _displayName, email: email),
+          AttendanceDashboardPage(email: email),
+          MaterialsPage(email: email),
+          TimetablePage(email: email), 
+          SettingsPage(name: _displayName, email: email), 
         ];
       });
     }
@@ -76,9 +83,10 @@ class _StudentScreenState extends State<StudentScreen> {
         onDestinationSelected: (int index) {
           setState(() {
             _currentIndex = index;
-            if (_pages.length == 4 && _pages[0] is! Center) {
+            if (_pages.length == 5 && _pages[0] is! Center) {
                _pages = [
                 DashboardPage(name: _displayName, email: widget.studentEmail),
+                AttendanceDashboardPage(email: widget.studentEmail),
                 MaterialsPage(email: widget.studentEmail),
                 TimetablePage(email: widget.studentEmail),
                 SettingsPage(name: _displayName, email: widget.studentEmail),
@@ -88,6 +96,7 @@ class _StudentScreenState extends State<StudentScreen> {
         },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Home'),
+          NavigationDestination(icon: Icon(Icons.bar_chart_outlined), selectedIcon: Icon(Icons.bar_chart), label: 'Attendance'),
           NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: 'Materials'),
           NavigationDestination(icon: Icon(Icons.calendar_month_outlined), selectedIcon: Icon(Icons.calendar_month), label: 'Timetable'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
@@ -182,9 +191,7 @@ class _DashboardPageState extends State<DashboardPage> {
                        const SizedBox(height: 20),
                        
                        if (_selectedTab == 0) ...[
-                         // Updated to match Figma Styling
-                         _buildSubjectSection(subjects),
-                         const SizedBox(height: 30),
+                         // Today's classes and attendance card only
                          _buildTodayClassesSection(isDark, cardColor),
                          const SizedBox(height: 30),
                          // Pass the valid dropdown list
@@ -722,16 +729,23 @@ class _DashboardPageState extends State<DashboardPage> {
         itemCount: subjects.length,
         itemBuilder: (context, index) {
           final subject = subjects[index];
-          // Use real percentage for "indicator" if needed, but styling strictly matches Figma
-          // double pct = (subject['percentage'] as num).toDouble();
+          final pct = (subject['percentage'] as num?)?.toInt() ?? 0;
+          
+          // Color based on attendance percentage
+          final gradientColors = pct >= 75 
+              ? [const Color(0xFF4CAF50), const Color(0xFF2E7D32)] // Green
+              : pct >= 60 
+                  ? [const Color(0xFFFF9800), const Color(0xFFEF6C00)] // Orange
+                  : [const Color(0xFFF44336), const Color(0xFFB71C1C)]; // Red
           
           return Container(
             width: 87, // Figma Width
             margin: const EdgeInsets.only(right: 12), // Spacing
             decoration: ShapeDecoration(
-              image: const DecorationImage(
-                image: NetworkImage("https://placehold.co/87x105/png"), // Placeholder from Figma
-                fit: BoxFit.cover,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: gradientColors,
               ),
               shape: RoundedRectangleBorder(
                 side: const BorderSide(
@@ -809,7 +823,7 @@ class _DashboardPageState extends State<DashboardPage> {
                    final _StudentScreenState? parent = context.findAncestorStateOfType<_StudentScreenState>();
                    if (parent != null) {
                      parent.setState(() {
-                       parent._currentIndex = 1; // Switch to Timetable
+                       parent._currentIndex = 3; // Switch to Timetable
                      });
                    }
                 }, 
@@ -1028,7 +1042,382 @@ class _DashboardPageState extends State<DashboardPage> {
 }
 
 // ==========================================
-// 3. MATERIALS PAGE
+// 3. ATTENDANCE DASHBOARD PAGE
+// ==========================================
+class AttendanceDashboardPage extends StatefulWidget {
+  final String email;
+  const AttendanceDashboardPage({super.key, required this.email});
+
+  @override
+  State<AttendanceDashboardPage> createState() => _AttendanceDashboardPageState();
+}
+
+class _AttendanceDashboardPageState extends State<AttendanceDashboardPage> {
+  late Future<Map<String, dynamic>> _analyticsFuture;
+  String _section = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _analyticsFuture = DatabaseService().fetchFullAnalytics(widget.email);
+    _loadSection();
+  }
+
+  void _loadSection() async {
+    final section = await DatabaseService().getStudentSection(widget.email);
+    if (mounted) setState(() => _section = section);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = Theme.of(context).scaffoldBackgroundColor;
+    final cardColor = Theme.of(context).cardColor;
+    final textColor = Theme.of(context).textTheme.bodyLarge?.color ?? Colors.black;
+
+    return Scaffold(
+      backgroundColor: bgColor,
+      appBar: AppBar(
+        title: const Text("My Attendance"),
+        automaticallyImplyLeading: false,
+        elevation: 0,
+      ),
+      body: FutureBuilder<Map<String, dynamic>>(
+        future: _analyticsFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError || !snapshot.hasData) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.error_outline, size: 64, color: Colors.grey[400]),
+                  const SizedBox(height: 16),
+                  Text("Could not load attendance data", style: TextStyle(color: Colors.grey[500])),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () => setState(() {
+                      _analyticsFuture = DatabaseService().fetchFullAnalytics(widget.email);
+                    }),
+                    child: const Text("Retry"),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          final data = snapshot.data!;
+          // Safely convert List<dynamic> to List<Map<String, dynamic>>
+          final rawSubjects = data['subjects'] as List<dynamic>? ?? [];
+          final subjects = rawSubjects.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+          
+          // Calculate overall stats from subjects
+          int totalClasses = 0;
+          int totalPresent = 0;
+          for (var s in subjects) {
+            totalClasses += (s['total_classes'] as num?)?.toInt() ?? 0;
+            totalPresent += (s['attended'] as num?)?.toInt() ?? 0;
+          }
+          final overallPercentage = totalClasses > 0 ? ((totalPresent / totalClasses) * 100).round() : 0;
+
+          return RefreshIndicator(
+            onRefresh: () async {
+              setState(() {
+                _analyticsFuture = DatabaseService().fetchFullAnalytics(widget.email);
+              });
+            },
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Overall Attendance Card
+                  _buildOverallCard(overallPercentage, totalPresent, totalClasses, isDark, cardColor, textColor),
+                  const SizedBox(height: 24),
+                  
+                  // Section Header
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("Subject-wise Attendance", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor)),
+                      Text("${subjects.length} subjects", style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // Subject Cards
+                  if (subjects.isEmpty)
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 40),
+                        child: Column(
+                          children: [
+                            Icon(Icons.school_outlined, size: 64, color: Colors.grey[400]),
+                            const SizedBox(height: 16),
+                            Text("No subjects found", style: TextStyle(color: Colors.grey[500])),
+                            const SizedBox(height: 8),
+                            Text("Add classes to your timetable first", style: TextStyle(color: Colors.grey[400], fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                    )
+                  else
+                    ...subjects.map((subject) => _buildSubjectCard(subject, isDark, cardColor, textColor)),
+                  
+                  const SizedBox(height: 24),
+                  
+                  // Attendance Legend
+                  _buildLegend(isDark),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildOverallCard(int percentage, int present, int total, bool isDark, Color cardColor, Color textColor) {
+    final color = _getAttendanceColor(percentage);
+    
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [const Color(0xFF8B2072), const Color(0xFFB34D9B)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF8B2072).withValues(alpha: 0.3),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              // Circular Progress
+              SizedBox(
+                width: 100,
+                height: 100,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(
+                      width: 100,
+                      height: 100,
+                      child: CircularProgressIndicator(
+                        value: percentage / 100,
+                        strokeWidth: 10,
+                        backgroundColor: Colors.white.withValues(alpha: 0.2),
+                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          "$percentage%",
+                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                        const Text("Overall", style: TextStyle(fontSize: 11, color: Colors.white70)),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 20),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("Overall Attendance", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        _buildStatPill("Present", present.toString(), Colors.green.shade300),
+                        const SizedBox(width: 10),
+                        _buildStatPill("Total", total.toString(), Colors.white70),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: percentage >= 75 ? Colors.green.withValues(alpha: 0.3) : Colors.orange.withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        percentage >= 75 ? "✓ Above 75% - Good!" : "⚠ Below 75% - Improve",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatPill(String label, String value, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(value, style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+          const SizedBox(width: 4),
+          Text(label, style: const TextStyle(color: Colors.white70, fontSize: 11)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSubjectCard(Map<String, dynamic> subject, bool isDark, Color cardColor, Color textColor) {
+    final name = subject['name']?.toString() ?? 'Unknown';
+    final percentage = (subject['percentage'] as num?)?.toInt() ?? 0;
+    final present = (subject['attended'] as num?)?.toInt() ?? 0;
+    final total = (subject['total_classes'] as num?)?.toInt() ?? 0;
+    final color = _getAttendanceColor(percentage);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cardColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: isDark ? Colors.grey[700]! : Colors.grey[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  name,
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: textColor),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  "$percentage%",
+                  style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Progress Bar
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: percentage / 100,
+              minHeight: 8,
+              backgroundColor: isDark ? Colors.grey[700] : Colors.grey[200],
+              valueColor: AlwaysStoppedAnimation<Color>(color),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("$present / $total classes", style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+              Text(
+                _getStatusText(percentage),
+                style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegend(bool isDark) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark ? Colors.grey[800]!.withValues(alpha: 0.5) : Colors.grey[100],
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text("Attendance Legend", style: TextStyle(fontWeight: FontWeight.bold, color: isDark ? Colors.white70 : Colors.black54)),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildLegendItem(Colors.green, "≥ 75%", "Safe"),
+              _buildLegendItem(Colors.orange, "60-74%", "Warning"),
+              _buildLegendItem(Colors.red, "< 60%", "Critical"),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegendItem(Color color, String range, String label) {
+    return Row(
+      children: [
+        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 6),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(range, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color)),
+            Text(label, style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Color _getAttendanceColor(int percentage) {
+    if (percentage >= 75) return Colors.green;
+    if (percentage >= 60) return Colors.orange;
+    return Colors.red;
+  }
+
+  String _getStatusText(int percentage) {
+    if (percentage >= 75) return "On Track";
+    if (percentage >= 60) return "Needs Improvement";
+    return "Critical - Attend More!";
+  }
+}
+
+// ==========================================
+// 4. MATERIALS PAGE
 // ==========================================
 class MaterialsPage extends StatefulWidget {
   final String email;
@@ -1285,11 +1674,9 @@ class _MaterialsPageState extends State<MaterialsPage> {
             const SizedBox(height: 8),
             Text("Type: ${material['resource_type'] ?? 'PDF'}"),
             const SizedBox(height: 16),
-            Text(
-              "URL: $url",
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+            const Text(
+              "Tap 'Open/Download' to view the file",
+              style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
         ),
@@ -1299,15 +1686,21 @@ class _MaterialsPageState extends State<MaterialsPage> {
             child: const Text("Close"),
           ),
           ElevatedButton.icon(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(context);
-              // In a real app, use url_launcher to open the URL
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text("Opening: ${material['title']}")),
-              );
+              try {
+                final uri = Uri.parse(url);
+                await launchUrl(uri, mode: LaunchMode.externalApplication);
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text("Error opening file: $e"), backgroundColor: Colors.red),
+                  );
+                }
+              }
             },
-            icon: const Icon(Icons.open_in_new, size: 18),
-            label: const Text("Open"),
+            icon: const Icon(Icons.download, size: 18),
+            label: const Text("Open/Download"),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF8B2072),
               foregroundColor: Colors.white,
