@@ -5,6 +5,7 @@ import 'screens/login_screen.dart';
 import 'screens/student_screen.dart';
 import 'screens/teacher_screen.dart';
 import 'services/database_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // 1. GLOBAL VARIABLES
 final supabase = Supabase.instance.client;
@@ -13,12 +14,24 @@ final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.light);
 // 2. MAIN ENTRY POINT
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
+  
+  // Initialize Supabase
   await Supabase.initialize(
     // REPLACE THESE WITH YOUR ACTUAL KEYS IF THEY ARE DIFFERENT
     url: 'https://scvthcyknohcbdaqpynb.supabase.co', 
     anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjdnRoY3lrbm9oY2JkYXFweW5iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg3MjEyMTYsImV4cCI6MjA4NDI5NzIxNn0.UAcEDz05eBujbJEVtu7DzofqtYTYFQxA63zjRlTAQOU',
   );
+  
+  // Load Theme Preference
+  final prefs = await SharedPreferences.getInstance();
+  final isDark = prefs.getBool('is_dark_mode');
+  if (isDark != null) {
+    themeNotifier.value = isDark ? ThemeMode.dark : ThemeMode.light;
+  } else {
+    // Default to system
+    final systemDark = WidgetsFlutterBinding.ensureInitialized().platformDispatcher.platformBrightness == Brightness.dark;
+    themeNotifier.value = systemDark ? ThemeMode.dark : ThemeMode.light;
+  }
 
   runApp(const AttendanceApp());
 }

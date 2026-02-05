@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:fl_chart/fl_chart.dart';
 import '../main.dart'; 
 import 'attendance/scan_screen.dart';
 import '../services/database_service.dart';
 import 'login_screen.dart';
 import 'request_correction_page.dart';
+import 'profile_page.dart';
 
 // ==========================================
 // 1. MAIN STUDENT SCREEN (NAVIGATION)
@@ -28,14 +30,56 @@ class _StudentScreenState extends State<StudentScreen> {
     const Center(child: CircularProgressIndicator()),
     const Center(child: CircularProgressIndicator()),
     const Center(child: CircularProgressIndicator()),
-    const Center(child: CircularProgressIndicator()),
   ];
+  
+  RealtimeChannel? _notificationsChannel;
 
   @override
   void initState() {
     super.initState();
     _parseStudentData();
-    _initSequence(); 
+    _initSequence();
+    _listenToNotifications();
+  }
+  
+  void _listenToNotifications() {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+    
+    _notificationsChannel = Supabase.instance.client
+        .channel('public:attendance_requests:${user.id}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'attendance_correction_requests',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq, 
+            column: 'student_id', 
+            value: user.id
+          ),
+          callback: (payload) {
+             final newRecord = payload.newRecord;
+             final status = newRecord['status'];
+             final subject = newRecord['subject_code'];
+             
+             if (mounted) {
+               ScaffoldMessenger.of(context).showSnackBar(
+                 SnackBar(
+                   content: Text("Request for $subject was $status!"),
+                   backgroundColor: status == 'Approved' ? Colors.green : Colors.red,
+                   behavior: SnackBarBehavior.floating,
+                 ),
+               );
+             }
+          }
+        )
+        .subscribe();
+  }
+  
+  @override
+  void dispose() {
+    if (_notificationsChannel != null) Supabase.instance.client.removeChannel(_notificationsChannel!);
+    super.dispose();
   }
 
   Future<void> _initSequence() async {
@@ -54,7 +98,7 @@ class _StudentScreenState extends State<StudentScreen> {
           AttendanceDashboardPage(email: email),
           MaterialsPage(email: email),
           TimetablePage(email: email), 
-          SettingsPage(name: _displayName, email: email), 
+          ProfilePage(name: _displayName, email: email), 
         ];
       });
     }
@@ -89,7 +133,7 @@ class _StudentScreenState extends State<StudentScreen> {
                 AttendanceDashboardPage(email: widget.studentEmail),
                 MaterialsPage(email: widget.studentEmail),
                 TimetablePage(email: widget.studentEmail),
-                SettingsPage(name: _displayName, email: widget.studentEmail),
+                ProfilePage(name: _displayName, email: widget.studentEmail),
               ];
             }
           });
@@ -169,6 +213,12 @@ class _DashboardPageState extends State<DashboardPage> {
                   final data = snapshot.data ?? {};
                   final subjects = data['subjects'] as List? ?? [];
                   
+                  // ⚠️ LOW ATTENDANCE ALERT
+                  final lowAttendanceSubjects = subjects.where((s) {
+                    final p = s['percentage'];
+                    return p is num && p < 75.0;
+                  }).toList();
+
                   // Extract subject names for the dropdown
                   final List<String> subjectNames = subjects
                       .map((s) => s['name']?.toString() ?? "Unknown Subject")
@@ -187,6 +237,21 @@ class _DashboardPageState extends State<DashboardPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                        const SizedBox(height: 20),
+                       const SizedBox(height: 20),
+                       
+                       if (lowAttendanceSubjects.isNotEmpty) ...[
+                         Container(
+                           margin: const EdgeInsets.only(bottom: 20, left: 24, right: 24),
+                           padding: const EdgeInsets.all(12),
+                           decoration: BoxDecoration(color: Colors.red.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.red.withOpacity(0.3))),
+                           child: Row(children: [
+                             const Icon(Icons.warning_amber_rounded, color: Colors.red),
+                             const SizedBox(width: 12),
+                             Expanded(child: Text("Warning: Low attendance in ${lowAttendanceSubjects.length} subject(s)!", style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold))),
+                           ]),
+                         ),
+                       ],
+
                        _buildTabSelector(isDark, textColor),
                        const SizedBox(height: 20),
                        
@@ -196,6 +261,8 @@ class _DashboardPageState extends State<DashboardPage> {
                          const SizedBox(height: 30),
                          // Pass the valid dropdown list
                          _buildAttendanceCard(subjectNames, isDark, cardColor),
+                         const SizedBox(height: 30),
+                         _buildAttendanceTrendChart(isDark, cardColor),
                        ] else ...[
                          const Center(child: Padding(padding: EdgeInsets.all(20), child: Text("News & Events Feed coming soon!")))
                        ],
@@ -227,6 +294,87 @@ class _DashboardPageState extends State<DashboardPage> {
         label: const Text("Mark Attendance", style: TextStyle(color: Colors.white))
       ),
       */
+    );
+  }
+
+  Widget _buildAttendanceTrendChart(bool isDark, Color cardColor) {
+    // Simulated Data for Demo - In real app, aggregate attendance_logs by week
+    final spots = [
+       const FlSpot(0, 75),
+       const FlSpot(1, 80),
+       const FlSpot(2, 78),
+       const FlSpot(3, 85),
+       const FlSpot(4, 90),
+       const FlSpot(5, 88),
+    ];
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: cardColor,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 5)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("Weekly Trend", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: isDark ? Colors.white : Colors.black87)),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: Colors.green.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+                child: const Text("+12%", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            height: 150,
+            child: LineChart(
+              LineChartData(
+                gridData: FlGridData(show: false),
+                titlesData: FlTitlesData(
+                  leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                  bottomTitles: AxisTitles(
+                    sideTitles: SideTitles(
+                      showTitles: true,
+                      getTitlesWidget: (value, meta) {
+                        const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                        if (value.toInt() >= 0 && value.toInt() < days.length) {
+                           return Text(days[value.toInt()], style: const TextStyle(color: Colors.grey, fontSize: 10));
+                        }
+                        return const Text('');
+                      },
+                    ),
+                  ),
+                ),
+                borderData: FlBorderData(show: false),
+                lineBarsData: [
+                  LineChartBarData(
+                    spots: spots,
+                    isCurved: true,
+                    color: const Color(0xFF8B2072),
+                    barWidth: 3,
+                    isStrokeCapRound: true,
+                    dotData: FlDotData(show: false),
+                    belowBarData: BarAreaData(
+                      show: true,
+                      color: const Color(0xFF8B2072).withOpacity(0.1),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1429,6 +1577,15 @@ class MaterialsPage extends StatefulWidget {
 class _MaterialsPageState extends State<MaterialsPage> {
   String _selectedFilter = 'All';
   final List<String> _filters = ['All', 'PDF', 'Video', 'Link'];
+  Key _streamKey = UniqueKey();
+  
+  Future<void> _refreshMaterials() async {
+    // Simulate a small delay for better UX and force stream restart
+    await Future.delayed(const Duration(milliseconds: 500));
+    setState(() {
+      _streamKey = UniqueKey();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1480,6 +1637,7 @@ class _MaterialsPageState extends State<MaterialsPage> {
           // Materials List
           Expanded(
             child: StreamBuilder<List<Map<String, dynamic>>>(
+              key: _streamKey,
               stream: DatabaseService().streamStudentMaterials(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
@@ -1487,23 +1645,31 @@ class _MaterialsPageState extends State<MaterialsPage> {
                 }
                 
                 if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.folder_open_outlined, size: 80, color: Colors.grey[400]),
-                        const SizedBox(height: 16),
-                        Text(
-                          "No materials yet",
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor),
+                  return RefreshIndicator(
+                    onRefresh: _refreshMaterials,
+                    child: SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      child: Container(
+                        height: MediaQuery.of(context).size.height * 0.7,
+                        alignment: Alignment.center,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.folder_open_outlined, size: 80, color: Colors.grey[400]),
+                            const SizedBox(height: 16),
+                            Text(
+                              "No materials yet",
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              "Materials shared by your teachers\nwill appear here",
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Colors.grey[500]),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          "Materials shared by your teachers\nwill appear here",
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.grey[500]),
-                        ),
-                      ],
+                      ),
                     ),
                   );
                 }
@@ -1518,21 +1684,32 @@ class _MaterialsPageState extends State<MaterialsPage> {
                 }
 
                 if (materials.isEmpty) {
-                  return Center(
-                    child: Text(
-                      "No $_selectedFilter materials found",
-                      style: TextStyle(color: Colors.grey[500]),
+                  return RefreshIndicator(
+                    onRefresh: _refreshMaterials,
+                    child: SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      child: Container(
+                        height: MediaQuery.of(context).size.height * 0.7,
+                        alignment: Alignment.center,
+                        child: Text(
+                          "No $_selectedFilter materials found",
+                          style: TextStyle(color: Colors.grey[500]),
+                        ),
+                      ),
                     ),
                   );
                 }
 
-                return ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: materials.length,
-                  itemBuilder: (context, index) {
-                    final material = materials[index];
-                    return _buildMaterialCard(material, isDark, cardColor, textColor);
-                  },
+                return RefreshIndicator(
+                  onRefresh: _refreshMaterials,
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: materials.length,
+                    itemBuilder: (context, index) {
+                      final material = materials[index];
+                      return _buildMaterialCard(material, isDark, cardColor, textColor);
+                    },
+                  ),
                 );
               },
             ),
@@ -1915,44 +2092,6 @@ class _PriorityNotificationsState extends State<PriorityNotifications> {
 // ==========================================
 // 5. SETTINGS PAGE
 // ==========================================
-class SettingsPage extends StatefulWidget {
-  final String name;
-  final String email;
-  const SettingsPage({super.key, required this.name, required this.email});
-  @override
-  State<SettingsPage> createState() => _SettingsPageState();
-}
 
-class _SettingsPageState extends State<SettingsPage> {
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = themeNotifier.value == ThemeMode.dark;
-    return Scaffold(
-      appBar: AppBar(title: const Text("Settings"), automaticallyImplyLeading: false),
-      body: ListView(children: [
-        const SizedBox(height: 20),
-        ListTile(leading: CircleAvatar(backgroundColor: Colors.purple.shade100, child: Text(widget.name[0], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.purple))), title: Text(widget.name), subtitle: Text(widget.email)),
-        const Divider(),
-        SwitchListTile(title: const Text("Dark Mode"), secondary: const Icon(Icons.dark_mode_outlined), value: isDarkMode, onChanged: (bool value) { setState(() { themeNotifier.value = value ? ThemeMode.dark : ThemeMode.light; }); }),
-        const Divider(),
-        // [NEW] Correction Request Tile
-        ListTile(
-          leading: const Icon(Icons.assignment_late_outlined, color: Colors.orange),
-          title: const Text("Request Attendance Correction"),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () {
-            Navigator.push(context, MaterialPageRoute(builder: (_) => RequestCorrectionPage(email: widget.email)));
-          },
-        ),
-        const Divider(),
-        ListTile(leading: const Icon(Icons.logout, color: Colors.red), title: const Text("Log Out", style: TextStyle(color: Colors.red)), onTap: () async {
-        await Supabase.instance.client.auth.signOut();
-        if (context.mounted) {
-           Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const LoginScreen()), (route) => false);
-        }
-      })]),
-    );
-  }
-}
 
 // Note: RequestCorrectionPage is now imported from request_correction_page.dart

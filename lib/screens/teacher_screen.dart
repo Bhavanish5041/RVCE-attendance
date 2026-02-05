@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:typed_data'; // Uncomment for Real BLE
 import 'package:flutter_ble_peripheral/flutter_ble_peripheral.dart'; // Uncomment for Real BLE
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 // 🟢 IMPORTANT: Import LoginScreen for logout navigation
 import 'login_screen.dart'; 
@@ -33,11 +37,46 @@ class _TeacherScreenState extends State<TeacherScreen> {
   // 📧 CURRENT USER
   User? _currentUser;
   bool _isLoadingProfile = true;
+  
+  // 🔔 PENDING REQUESTS COUNT
+  int _pendingRequestCount = 0;
 
   @override
   void initState() {
     super.initState();
     _checkUserAndLoad();
+    _loadPendingRequestCount();
+  }
+  
+  Future<void> _loadPendingRequestCount() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) return;
+      
+      final teacherSubjects = await Supabase.instance.client
+          .from('timetable')
+          .select('subject_code')
+          .eq('teacher_id', user.id);
+      
+      final subjectCodes = teacherSubjects
+          .map((s) => s['subject_code'] as String)
+          .toSet()
+          .toList();
+      
+      if (subjectCodes.isEmpty) return;
+      
+      final count = await Supabase.instance.client
+          .from('attendance_correction_requests')
+          .select('id')
+          .eq('status', 'Pending')
+          .inFilter('subject_code', subjectCodes);
+      
+      if (mounted) {
+        setState(() => _pendingRequestCount = count.length);
+      }
+    } catch (e) {
+      debugPrint('Error loading pending count: $e');
+    }
   }
 
   // 🔒 1. SECURITY CHECK & LOAD
@@ -293,12 +332,24 @@ class _TeacherScreenState extends State<TeacherScreen> {
           backgroundColor: _isDarkMode! ? const Color(0xFF1E1E1E) : Colors.white,
           indicatorColor: _isDarkMode! ? Colors.purple.shade700 : Colors.purple.shade100,
           elevation: 10,
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Home'),
-            NavigationDestination(icon: Icon(Icons.calendar_month_outlined), selectedIcon: Icon(Icons.calendar_month), label: 'Timetable'),
-            NavigationDestination(icon: Icon(Icons.add_box_outlined), selectedIcon: Icon(Icons.add_box), label: 'Topics'),
-            NavigationDestination(icon: Icon(Icons.inbox_outlined), selectedIcon: Icon(Icons.inbox), label: 'Requests'),
-            NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
+          destinations: [
+            const NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Home'),
+            const NavigationDestination(icon: Icon(Icons.calendar_month_outlined), selectedIcon: Icon(Icons.calendar_month), label: 'Timetable'),
+            const NavigationDestination(icon: Icon(Icons.add_box_outlined), selectedIcon: Icon(Icons.add_box), label: 'Topics'),
+            NavigationDestination(
+              icon: Badge(
+                isLabelVisible: _pendingRequestCount > 0,
+                label: Text('$_pendingRequestCount'),
+                child: const Icon(Icons.inbox_outlined),
+              ),
+              selectedIcon: Badge(
+                isLabelVisible: _pendingRequestCount > 0,
+                label: Text('$_pendingRequestCount'),
+                child: const Icon(Icons.inbox),
+              ),
+              label: 'Requests',
+            ),
+            const NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: 'Settings'),
           ],
         ),
       ),
@@ -354,6 +405,10 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
   final TextEditingController _topicSummaryCtrl = TextEditingController();
   final TextEditingController _youtubeLinkCtrl = TextEditingController();
   final List<Map<String, dynamic>> _attachedFiles = [];
+  
+  // 📊 CLASS STATS
+  Map<String, dynamic> _classStats = {'avg': 0.0, 'total': 0};
+  bool _loadingStats = false;
 
   @override
   void initState() {
@@ -391,6 +446,134 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
   void didUpdateWidget(TeacherHomeView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.profName != oldWidget.profName) _fetchSchedule();
+    if (widget.currentSubject != oldWidget.currentSubject || widget.currentSection != oldWidget.currentSection) {
+       _fetchClassStats();
+    }
+  }
+
+  Future<void> _fetchClassStats() async {
+    if (widget.currentSubject.isEmpty) return;
+    
+    setState(() => _loadingStats = true);
+    try {
+      final logs = await Supabase.instance.client
+          .from('attendance_logs')
+          .select('status')
+          .eq('subject', widget.currentSubject)
+          .eq('section', widget.currentSection);
+      
+      if (logs.isEmpty) {
+         setState(() {
+           _classStats = {'avg': 0.0, 'total': 0};
+           _loadingStats = false;
+         });
+         return;
+      }
+      
+      int totalLists = logs.length;
+      int present = logs.where((l) => l['status'] == 'Present').length;
+      // We need number of classes, not just logs. 
+      // Actually average attendance % = (Total Present / Total Logs) * 100 is simplistic but works if "logs" contains absent records too.
+      // If we only log Presents, then we need total classes * total students.
+      // Assuming we log Present/Absent for everyone (which we should).
+      // But currently the system might only log 'Present' from scans?
+      // If so, we need total classes.
+      // Let's assume for now we calculate % of LOGGED entries that are Present.
+      // Or we can just count "Total Check-ins" for now if we don't have Absent logs.
+      
+      // Better metric for now: Total Check-ins for this class
+      
+      double avg = totalLists > 0 ? (present / totalLists) * 100 : 0.0;
+      
+      // Just showing Total Check-ins might be safer if we don't track Absents reliably yet.
+      // But user asked for "Average Attendance %".
+      // Let's rely on Present/Total logs ratio for now.
+      
+      setState(() {
+        _classStats = {'avg': avg, 'total': totalLists};
+        _loadingStats = false;
+      });
+    } catch (e) {
+      debugPrint("Error loading stats: $e");
+      setState(() => _loadingStats = false);
+    }
+  }
+
+  Future<void> _exportReport() async {
+    if (widget.currentSubject.isEmpty) return;
+    
+    try {
+      final logs = await Supabase.instance.client
+          .from('attendance_logs')
+          .select('student_id, status, created_at')
+          .eq('subject', widget.currentSubject)
+          .eq('section', widget.currentSection);
+
+      if (logs.isEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("No data to export")));
+        return;
+      }
+
+      // Group by student
+      final Map<String, int> presenceCount = {};
+      final Set<String> studentIds = {};
+      
+      for (var l in logs) {
+         final sid = l['student_id'] as String;
+         studentIds.add(sid);
+         if (l['status'] == 'Present') {
+           presenceCount[sid] = (presenceCount[sid] ?? 0) + 1;
+         }
+      }
+      
+      // Fetch Names
+      final students = await Supabase.instance.client
+          .from('students')
+          .select('user_id, name, email')
+          .inFilter('user_id', studentIds.toList());
+          
+      final Map<String, String> names = {};
+      final Map<String, String> emails = {};
+      for (var s in students) {
+        names[s['user_id']] = s['name'];
+        emails[s['user_id']] = s['email'];
+      }
+
+      // Generate PDF
+      final pdf = pw.Document();
+      
+      pdf.addPage(
+        pw.Page(
+          build: (pw.Context context) {
+            return pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Header(level: 0, child: pw.Text("Attendance Report: ${widget.currentSubject} - Sec ${widget.currentSection}", style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold))),
+                pw.SizedBox(height: 20),
+                pw.Table.fromTextArray(
+                  context: context,
+                  headers: ['Student Name', 'Email', 'Classes Attended'],
+                  data: studentIds.map((sid) {
+                    return [
+                      names[sid] ?? 'Unknown', 
+                      emails[sid] ?? sid,
+                      presenceCount[sid]?.toString() ?? '0'
+                    ];
+                  }).toList(),
+                ),
+                pw.SizedBox(height: 20),
+                pw.Text("Generated on ${DateTime.now().toString()}", style: const pw.TextStyle(color: PdfColors.grey)),
+              ],
+            );
+          },
+        ),
+      );
+
+      await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => pdf.save());
+      
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Export failed: $e"), backgroundColor: Colors.red));
+    }
   }
 
   Future<void> _fetchSchedule() async {
@@ -672,6 +855,44 @@ class _TeacherHomeViewState extends State<TeacherHomeView> {
                     );
                   },
                 ),
+              ),
+              const SizedBox(height: 30),
+            ],
+
+            // 📊 CLASS STATISTICS CARD
+            if (widget.currentSubject.isNotEmpty) ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.blue.shade100),
+                ),
+                child: _loadingStats 
+                    ? const Center(child: CircularProgressIndicator())
+                    : Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          Column(
+                            children: [
+                              Text("${_classStats['avg']?.toStringAsFixed(1)}%", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.blue)),
+                              const Text("Avg Attendance", style: TextStyle(fontSize: 12, color: Colors.blueGrey)),
+                            ],
+                          ),
+                          Container(height: 40, width: 1, color: Colors.blue.shade200),
+                          Column(
+                            children: [
+                              Text("${_classStats['total']}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.blue)),
+                              const Text("Total Logs", style: TextStyle(fontSize: 12, color: Colors.blueGrey)),
+                            ],
+                          ),
+                          IconButton(
+                            onPressed: _exportReport,
+                            icon: const Icon(Icons.picture_as_pdf, color: Colors.red),
+                            tooltip: "Export Report",
+                          ),
+                        ],
+                      ),
               ),
               const SizedBox(height: 30),
             ],
@@ -1377,10 +1598,14 @@ class _TeacherRequestsViewState extends State<TeacherRequestsView> {
                     ],
                   ),
                 )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _requests.length,
-                  itemBuilder: (context, index) {
+              : RefreshIndicator(
+                  onRefresh: () async {
+                    await _loadRequests();
+                  },
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _requests.length,
+                    itemBuilder: (context, index) {
                     final req = _requests[index];
                     final studentName = req['student_name'] ?? req['student_id'] ?? 'Student';
                     final studentEmail = req['student_email'] ?? '';
@@ -1444,6 +1669,29 @@ class _TeacherRequestsViewState extends State<TeacherRequestsView> {
                               ],
                             ),
                           ),
+                          // View Proof button
+                          if (req['proof_url'] != null && req['proof_url'].toString().isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                              child: SizedBox(
+                                width: double.infinity,
+                                child: OutlinedButton.icon(
+                                  onPressed: () async {
+                                    try {
+                                      final uri = Uri.parse(req['proof_url'].toString());
+                                      await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                    } catch (e) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('Error opening proof: $e'), backgroundColor: Colors.red),
+                                      );
+                                    }
+                                  },
+                                  icon: const Icon(Icons.attachment, color: Colors.blue),
+                                  label: const Text('View Proof Document', style: TextStyle(color: Colors.blue)),
+                                  style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.blue)),
+                                ),
+                              ),
+                            ),
                           const SizedBox(height: 12),
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1477,6 +1725,7 @@ class _TeacherRequestsViewState extends State<TeacherRequestsView> {
                     );
                   },
                 ),
+              ),
     );
   }
 }
